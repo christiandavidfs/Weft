@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `empty_status`, `engine_ref`, `wire_event_callback`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 void networkStart({required String deviceName}) =>
     RustLib.instance.api.crateApiNetworkNetworkStart(deviceName: deviceName);
@@ -20,6 +20,20 @@ NetworkStatusView networkStatus() =>
 Stream<NetworkEventView> networkEvents() =>
     RustLib.instance.api.crateApiNetworkNetworkEvents();
 
+void networkStartWith({
+  required String deviceName,
+  required bool enableAudio,
+}) => RustLib.instance.api.crateApiNetworkNetworkStartWith(
+  deviceName: deviceName,
+  enableAudio: enableAudio,
+);
+
+MediaStatsView? networkMediaStats() =>
+    RustLib.instance.api.crateApiNetworkNetworkMediaStats();
+
+void networkTransmitFile({required String path}) =>
+    RustLib.instance.api.crateApiNetworkNetworkTransmitFile(path: path);
+
 void networkRequestTransmit() =>
     RustLib.instance.api.crateApiNetworkNetworkRequestTransmit();
 
@@ -31,6 +45,65 @@ void networkApproveTransmit({required String deviceId}) => RustLib.instance.api
 
 void networkDenyTransmit({required String deviceId}) =>
     RustLib.instance.api.crateApiNetworkNetworkDenyTransmit(deviceId: deviceId);
+
+class MediaStatsView {
+  final bool sessionActive;
+  final bool isTransmitter;
+  final int mediaPort;
+  final BigInt receivedPackets;
+  final BigInt transmittedPackets;
+  final bool clockSynced;
+  final PlatformInt64 clockOffsetUs;
+  final BigInt clockRttUs;
+  final String lastError;
+  final BigInt bufferedPackets;
+  final BigInt bufferedUs;
+
+  const MediaStatsView({
+    required this.sessionActive,
+    required this.isTransmitter,
+    required this.mediaPort,
+    required this.receivedPackets,
+    required this.transmittedPackets,
+    required this.clockSynced,
+    required this.clockOffsetUs,
+    required this.clockRttUs,
+    required this.lastError,
+    required this.bufferedPackets,
+    required this.bufferedUs,
+  });
+
+  @override
+  int get hashCode =>
+      sessionActive.hashCode ^
+      isTransmitter.hashCode ^
+      mediaPort.hashCode ^
+      receivedPackets.hashCode ^
+      transmittedPackets.hashCode ^
+      clockSynced.hashCode ^
+      clockOffsetUs.hashCode ^
+      clockRttUs.hashCode ^
+      lastError.hashCode ^
+      bufferedPackets.hashCode ^
+      bufferedUs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MediaStatsView &&
+          runtimeType == other.runtimeType &&
+          sessionActive == other.sessionActive &&
+          isTransmitter == other.isTransmitter &&
+          mediaPort == other.mediaPort &&
+          receivedPackets == other.receivedPackets &&
+          transmittedPackets == other.transmittedPackets &&
+          clockSynced == other.clockSynced &&
+          clockOffsetUs == other.clockOffsetUs &&
+          clockRttUs == other.clockRttUs &&
+          lastError == other.lastError &&
+          bufferedPackets == other.bufferedPackets &&
+          bufferedUs == other.bufferedUs;
+}
 
 class MemberView {
   final String deviceId;

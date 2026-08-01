@@ -36,7 +36,9 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _fileController = TextEditingController();
   NetworkStatusView _status = emptyStatus();
+  MediaStatsView? _media;
   final List<String> _events = [];
   StreamSubscription<NetworkEventView>? _sub;
   Timer? _poll;
@@ -50,10 +52,16 @@ class _HomePageState extends State<HomePage> {
         _events.insert(0, '[${ev.kind}] ${ev.deviceName.isNotEmpty ? ev.deviceName : ev.deviceId}: ${ev.message}');
         if (_events.length > 8) _events.removeLast();
         _status = networkStatus();
+        _media = networkMediaStats();
       });
     });
     _poll = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _status = networkStatus());
+      if (mounted) {
+        setState(() {
+          _status = networkStatus();
+          _media = networkMediaStats();
+        });
+      }
     });
   }
 
@@ -77,18 +85,36 @@ class _HomePageState extends State<HomePage> {
   Future<void> _start() async {
     final name = _nameController.text.trim();
     try {
-      networkStart(deviceName: name.isEmpty ? 'dispositivo' : name);
+      networkStartWith(deviceName: name.isEmpty ? 'dispositivo' : name, enableAudio: true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Error: $e')));
     }
-    setState(() => _status = networkStatus());
+    setState(() {
+      _status = networkStatus();
+      _media = networkMediaStats();
+    });
   }
 
   void _stop() {
     networkStop();
-    setState(() => _status = networkStatus());
+    setState(() {
+      _status = networkStatus();
+      _media = null;
+    });
+  }
+
+  void _transmitFile() {
+    final path = _fileController.text.trim();
+    if (path.isEmpty) return;
+    try {
+      networkTransmitFile(path: path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
   }
 
   String _displayName(String id) {
@@ -107,7 +133,7 @@ class _HomePageState extends State<HomePage> {
     final isCoordinator = running && _status.role == 'coordinator';
     final amTransmitter = running && _status.transmitterId == _status.deviceId;
     return Scaffold(
-      appBar: AppBar(title: const Text('Weft — Fase 1')),
+      appBar: AppBar(title: const Text('Weft — Fase 2')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -181,9 +207,49 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ],
                   ),
+                  if (amTransmitter) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _fileController,
+                      decoration: const InputDecoration(
+                        labelText: 'Ruta del archivo de audio (wav/mp3/flac)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    FilledButton.tonalIcon(
+                      onPressed: _transmitFile,
+                      icon: const Icon(Icons.upload_file),
+                      label: const Text('Transmitir archivo'),
+                    ),
+                  ],
                 ],
               ),
             ),
+            if (running) ...[
+              const SizedBox(height: 12),
+              _card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('Plano de medios', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    _row('Puerto UDP', _media != null ? '${_media!.mediaPort}' : '—'),
+                    _row('Reloj',
+                        (_media?.clockSynced ?? false) ? 'sincronizado' : 'no sincronizado'),
+                    if (_media?.clockSynced ?? false) ...[
+                      _row('Offset', '${_media!.clockOffsetUs} µs'),
+                      _row('RTT', '${_media!.clockRttUs} µs'),
+                    ],
+                    _row('Recibidos', '${_media?.receivedPackets ?? 0} paquetes'),
+                    _row('Transmitidos', '${_media?.transmittedPackets ?? 0} paquetes'),
+                    _row('Buffer', '${_media?.bufferedPackets ?? 0} paquetes (${_media?.bufferedUs ?? 0} µs)'),
+                    if ((_media?.lastError ?? '').isNotEmpty)
+                      _row('Error', _media!.lastError),
+                  ],
+                ),
+              ),
+            ],
             if (isCoordinator && _status.pendingTransmitRequests.isNotEmpty) ...[
               const SizedBox(height: 12),
               _card(

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{accept_async, connect_async};
 use uuid::Uuid;
 
+use crate::media::{MediaEngine, MediaStats, MemberMedia};
 use crate::network::control::{C2S, S2C};
 
 pub const SERVICE_TYPE: &str = "_weft._tcp.local.";
@@ -40,6 +42,7 @@ pub struct MemberInfo {
     pub device_name: String,
     pub addr: String,
     pub port: u16,
+    pub media_port: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +51,7 @@ pub struct PeerInfo {
     pub device_name: String,
     pub addr: String,
     pub port: u16,
+    pub media_port: u16,
     pub is_coordinator: bool,
 }
 
@@ -63,6 +67,7 @@ pub struct NetworkStatus {
     pub members: Vec<MemberInfo>,
     pub peers: Vec<PeerInfo>,
     pub pending_transmit_requests: Vec<String>,
+    pub media_port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +92,7 @@ struct State {
     pending_requests: Vec<String>,
     addr: IpAddr,
     port: u16,
+    media_port: u16,
     coordinator_addr: Option<SocketAddr>,
     connecting_to: Option<SocketAddr>,
     conns: HashMap<String, tokio::sync::mpsc::UnboundedSender<WsMessage>>,
@@ -106,6 +112,7 @@ pub struct SessionInner {
     state: Mutex<State>,
     events: Mutex<Option<Box<dyn Fn(NetworkEvent) + Send + Sync>>>,
     mdns: Mutex<Option<Advert>>,
+    media: Mutex<Option<Arc<MediaEngine>>>,
 }
 
 impl SessionInner {
@@ -126,6 +133,7 @@ impl SessionInner {
                 pending_requests: Vec::new(),
                 addr: "127.0.0.1".parse().unwrap(),
                 port: 0,
+                media_port: 0,
                 coordinator_addr: None,
                 connecting_to: None,
                 conns: HashMap::new(),
@@ -133,6 +141,7 @@ impl SessionInner {
             }),
             events: Mutex::new(None),
             mdns: Mutex::new(None),
+            media: Mutex::new(None),
         })
     }
 
@@ -169,7 +178,42 @@ impl SessionInner {
             members: s.members.values().cloned().collect(),
             peers: s.peers.values().cloned().collect(),
             pending_transmit_requests: s.pending_requests.clone(),
+            media_port: s.media_port,
         }
+    }
+
+    pub fn media(&self) -> Option<Arc<MediaEngine>> {
+        self.media.lock().unwrap().clone()
+    }
+
+    pub fn media_stats(&self) -> Option<MediaStats> {
+        self.media().map(|m| m.stats())
+    }
+
+    pub fn set_media(self: &Arc<Self>, engine: Arc<MediaEngine>) {
+        let media_port = engine.media_port();
+        {
+            let mut s = self.lock();
+            s.media_port = media_port;
+        }
+        *self.media.lock().unwrap() = Some(engine.clone());
+        let inner = self.clone();
+        engine.set_event_callback(Box::new(move |kind, msg| {
+            match kind {
+                "transmit_finished" => {
+                    let my_id = inner.my_id();
+                    let is_tx = {
+                        let s = inner.lock();
+                        s.transmitter_id.as_deref() == Some(my_id.as_str())
+                    };
+                    if is_tx {
+                        inner.release_transmit();
+                    }
+                }
+                _ => {}
+            }
+            inner.emit(kind, "", "", &msg);
+        }));
     }
 
     fn is_stopped(&self) -> bool {
@@ -206,7 +250,7 @@ impl SessionInner {
     }
 
     fn re_advertise(&self) {
-        let (daemon, instance, host, addr, port, role, device_id, device_name) = {
+        let (daemon, instance, host, addr, port, role, device_id, device_name, media_port) = {
             let mdns = self.mdns.lock().unwrap();
             let a = mdns.as_ref().expect("mdns not set up");
             let s = self.lock();
@@ -219,6 +263,7 @@ impl SessionInner {
                 s.role.as_str().to_string(),
                 s.device_id.clone(),
                 s.device_name.clone(),
+                s.media_port,
             )
         };
         let mut txt = HashMap::new();
@@ -226,6 +271,7 @@ impl SessionInner {
         txt.insert("device_name".to_string(), device_name);
         txt.insert("coordinator".to_string(), (role == "coordinator").to_string());
         txt.insert("port".to_string(), port.to_string());
+        txt.insert("media_port".to_string(), media_port.to_string());
         let service =
             ServiceInfo::new(SERVICE_TYPE, &instance, &host, addr, port, Some(txt)).expect("bad service");
         let _ = daemon.register(service);
@@ -250,6 +296,10 @@ impl SessionInner {
             .get_property_val_str("port")
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
+        let media_port: u16 = props
+            .get_property_val_str("media_port")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0);
         let is_coordinator = props
             .get_property_val_str("coordinator")
             .map(|v| v == "true")
@@ -268,6 +318,7 @@ impl SessionInner {
                     device_name: device_name.clone(),
                     addr: addr.to_string(),
                     port,
+                    media_port,
                     is_coordinator,
                 },
             );
@@ -341,8 +392,8 @@ impl SessionInner {
             s.coordinator_addr = None;
             s.connecting_to = None;
             s.pending_requests.clear();
-            let (self_id, self_name, self_addr, self_port) =
-                (s.device_id.clone(), s.device_name.clone(), s.addr.to_string(), s.port);
+            let (self_id, self_name, self_addr, self_port, self_media_port) =
+                (s.device_id.clone(), s.device_name.clone(), s.addr.to_string(), s.port, s.media_port);
             s.members.insert(
                 self_id.clone(),
                 MemberInfo {
@@ -350,11 +401,14 @@ impl SessionInner {
                     device_name: self_name,
                     addr: self_addr,
                     port: self_port,
+                    media_port: self_media_port,
                 },
             );
             session_id = s.session_id.clone();
         }
         self.re_advertise();
+        self.configure_media_session();
+        self.refresh_transmitter_media();
         self.emit(
             "session_created",
             &self.my_id(),
@@ -390,6 +444,7 @@ impl SessionInner {
             s.conns.clear();
         }
         self.re_advertise();
+        self.refresh_transmitter_media();
         self.emit("role_changed", &self.my_id(), &self.my_name(), "member");
         self.spawn_connect_if_needed(*addr);
     }
@@ -431,6 +486,10 @@ pub struct NetworkEngine {
 
 impl NetworkEngine {
     pub fn start(device_name: String) -> Result<Self, String> {
+        Self::start_with(device_name, true)
+    }
+
+    pub fn start_with(device_name: String, enable_audio: bool) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -445,6 +504,9 @@ impl NetworkEngine {
             .map_err(|e| format!("no se pudo abrir puerto de control: {e}"))?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         inner.set_addr_port(addr, port);
+
+        let media = Arc::new(MediaEngine::new(enable_audio)?);
+        inner.set_media(media);
 
         let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS: {e}"))?;
         let short = &device_id[..8];
@@ -467,6 +529,10 @@ impl NetworkEngine {
         self.inner.status()
     }
 
+    pub fn media_stats(&self) -> Option<MediaStats> {
+        self.inner.media_stats()
+    }
+
     pub fn set_event_callback(&self, cb: Box<dyn Fn(NetworkEvent) + Send + Sync>) {
         self.inner.set_event_callback(cb);
     }
@@ -486,6 +552,10 @@ impl NetworkEngine {
     pub fn deny_transmit(&self, device_id: &str) {
         self.inner.deny_transmit(device_id);
     }
+
+    pub fn transmit_file(&self, path: &str) -> Result<(), String> {
+        self.inner.transmit_file(path)
+    }
 }
 
 impl SessionInner {
@@ -502,6 +572,9 @@ impl SessionInner {
         }
         if let Some(advert) = self.mdns.lock().unwrap().as_ref() {
             let _ = advert.daemon.shutdown();
+        }
+        if let Some(engine) = self.media() {
+            engine.leave_session();
         }
     }
 
@@ -521,8 +594,56 @@ impl SessionInner {
                 device_name: m.device_name.clone(),
                 addr: m.addr.clone(),
                 port: m.port,
+                media_port: m.media_port,
             })
             .collect()
+    }
+
+    fn session_tag(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.lock().session_id.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Build the media member list (all session members except ourselves) and
+    /// push it into the media engine.
+    fn refresh_media_members(&self) {
+        if let Some(engine) = self.media() {
+            let members: Vec<MemberMedia> = {
+                let s = self.lock();
+                let my_id = s.device_id.clone();
+                s.members
+                    .values()
+                    .filter(|m| m.device_id != my_id)
+                    .filter_map(|m| {
+                        let ip: IpAddr = m.addr.parse().ok()?;
+                        Some(MemberMedia {
+                            device_id: m.device_id.clone(),
+                            media_addr: SocketAddr::new(ip, m.media_port),
+                        })
+                    })
+                    .collect()
+            };
+            engine.update_members(members);
+        }
+    }
+
+    fn configure_media_session(&self) {
+        if let Some(engine) = self.media() {
+            let is_coordinator = self.is_coordinator();
+            let tag = self.session_tag();
+            engine.set_session(tag, is_coordinator);
+        }
+    }
+
+    fn refresh_transmitter_media(&self) {
+        if let Some(engine) = self.media() {
+            let (my_id, tx_id) = {
+                let s = self.lock();
+                (s.device_id.clone(), s.transmitter_id.clone())
+            };
+            engine.set_transmitter(tx_id.as_deref() == Some(my_id.as_str()));
+        }
     }
 
     fn register_conn(&self, device_id: String, tx: tokio::sync::mpsc::UnboundedSender<WsMessage>) {
@@ -545,14 +666,16 @@ impl SessionInner {
         };
         self.broadcast(&S2C::MemberLeave { device_id: device_id.to_string() });
         self.broadcast_members();
+        self.refresh_media_members();
         if was_transmitter {
             self.broadcast(&S2C::TransmitRevoked { device_id: device_id.to_string() });
             self.grant_next_pending();
+            self.refresh_transmitter_media();
             self.emit("transmit_revoked", device_id, "", "transmisor desconectado");
         }
     }
 
-    fn add_member(&self, device_id: &str, device_name: &str, addr: String, port: u16) {
+    fn add_member(&self, device_id: &str, device_name: &str, addr: String, port: u16, media_port: u16) {
         {
             let mut s = self.lock();
             s.members.insert(
@@ -562,10 +685,12 @@ impl SessionInner {
                     device_name: device_name.to_string(),
                     addr,
                     port,
+                    media_port,
                 },
             );
         }
         self.broadcast_members();
+        self.refresh_media_members();
         self.emit("member_joined", device_id, device_name, "se unió a la sesión");
     }
 
@@ -601,6 +726,7 @@ impl SessionInner {
             self.broadcast(&S2C::TransmitGranted { device_id: id.clone() });
             self.emit("transmit_granted", &id, "", "tiene el token de transmisión");
         }
+        self.refresh_transmitter_media();
     }
 
     // ---- transmit token ----
@@ -626,6 +752,7 @@ impl SessionInner {
             } else {
                 self.emit("transmit_requested", &self.my_id(), &self.my_name(), "en espera");
             }
+            self.refresh_transmitter_media();
         } else {
             self.send_to_coordinator(&C2S::RequestTransmit { device_id: id });
         }
@@ -646,6 +773,7 @@ impl SessionInner {
         } else {
             self.send_to_coordinator(&C2S::ReleaseTransmit { device_id: id });
         }
+        self.refresh_transmitter_media();
     }
 
     pub fn approve_transmit(&self, device_id: &str) {
@@ -665,6 +793,7 @@ impl SessionInner {
             self.broadcast(&S2C::TransmitGranted { device_id: device_id.to_string() });
             self.emit("transmit_granted", device_id, "", "aprobado por el coordinador");
         }
+        self.refresh_transmitter_media();
     }
 
     pub fn deny_transmit(&self, device_id: &str) {
@@ -679,11 +808,28 @@ impl SessionInner {
         self.emit("transmit_denied", device_id, "", "solicitud rechazada");
     }
 
+    pub fn transmit_file(&self, path: &str) -> Result<(), String> {
+        let has_token = {
+            let s = self.lock();
+            s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+        };
+        if !has_token {
+            return Err("no tengo el token de transmisión".to_string());
+        }
+        let Some(engine) = self.media() else {
+            return Err("media no disponible".to_string());
+        };
+        engine.transmit_file(path)?;
+        let name = self.my_name();
+        self.emit("transmit_started", &self.my_id(), &name, path);
+        Ok(())
+    }
+
     // ---- coordinator incoming messages ----
 
     fn on_c2s(&self, msg: C2S) {
         match msg {
-            C2S::Hello { device_id: _device_id, device_name: _device_name } => {
+            C2S::Hello { .. } => {
                 let (addr, port) = {
                     let s = self.lock();
                     (s.coordinator_addr.map(|a| a.to_string()).unwrap_or_default(), s.port)
@@ -725,6 +871,7 @@ impl SessionInner {
                     self.broadcast(&S2C::TransmitRequested { device_id: device_id.clone(), device_name: name.clone() });
                     self.emit("transmit_requested", &device_id, &name, "pide el token");
                 }
+                self.refresh_transmitter_media();
             }
             C2S::ReleaseTransmit { device_id } => {
                 let was = {
@@ -746,6 +893,10 @@ impl SessionInner {
                     self.emit("transmit_revoked", &device_id, &name, "liberó la transmisión");
                     self.grant_next_pending();
                 }
+                self.refresh_transmitter_media();
+            }
+            C2S::ClockQuery { .. } => {
+                // Handled directly in handle_incoming (needs the conn tx).
             }
             C2S::Leave => {}
         }
@@ -780,6 +931,8 @@ impl SessionInner {
                         s.coordinator_id = coordinator_id.clone();
                     }
                 }
+                self.configure_media_session();
+                self.refresh_media_members();
                 self.emit("session_joined", &self.my_id(), &self.my_name(), "unido a la sesión");
             }
             S2C::Members { members } => {
@@ -792,10 +945,12 @@ impl SessionInner {
                             device_name: m.device_name,
                             addr: m.addr,
                             port: m.port,
+                            media_port: m.media_port,
                         },
                     );
                 }
                 self.lock().members = map;
+                self.refresh_media_members();
             }
             S2C::MemberJoin { member } => {
                 self.lock().members.insert(
@@ -805,18 +960,22 @@ impl SessionInner {
                         device_name: member.device_name.clone(),
                         addr: member.addr,
                         port: member.port,
+                        media_port: member.media_port,
                     },
                 );
+                self.refresh_media_members();
                 self.emit("member_joined", &member.device_id, &member.device_name, "se unió a la sesión");
             }
             S2C::MemberLeave { device_id } => {
                 self.lock().members.remove(&device_id);
+                self.refresh_media_members();
             }
             S2C::TransmitGranted { device_id } => {
                 {
                     let mut s = self.lock();
                     s.transmitter_id = Some(device_id.clone());
                 }
+                self.refresh_transmitter_media();
                 let name = self.lock().members.get(&device_id).map(|m| m.device_name.clone()).unwrap_or_default();
                 self.emit("transmit_granted", &device_id, &name, "tiene el token");
             }
@@ -827,13 +986,26 @@ impl SessionInner {
                         s.transmitter_id = None;
                     }
                 }
+                self.refresh_transmitter_media();
                 self.emit("transmit_revoked", &device_id, "", "se liberó la transmisión");
             }
             S2C::TransmitRequested { device_id, device_name } => {
                 self.emit("transmit_requested", &device_id, &device_name, "pide el token");
             }
             S2C::TransmitDenied { device_id } => {
+                self.refresh_transmitter_media();
                 self.emit("transmit_denied", &device_id, "", "solicitud rechazada");
+            }
+            S2C::ClockReply { query_sent_us, query_received_us, reply_sent_us } => {
+                if let Some(engine) = self.media() {
+                    let t3 = engine.now_local_us();
+                    engine.process_ntp(
+                        query_sent_us as u128,
+                        t3,
+                        query_received_us as u128,
+                        reply_sent_us as u128,
+                    );
+                }
             }
         }
     }
@@ -859,6 +1031,7 @@ async fn run_server(inner: Arc<SessionInner>, listener: TcpListener) {
 }
 
 async fn handle_incoming(inner: Arc<SessionInner>, stream: TcpStream) {
+    let peer_ip: Option<String> = stream.peer_addr().ok().map(|a| a.ip().to_string());
     let ws = match accept_async(stream).await {
         Ok(w) => w,
         Err(_) => return,
@@ -884,18 +1057,33 @@ async fn handle_incoming(inner: Arc<SessionInner>, stream: TcpStream) {
                     continue;
                 };
                 match c2s {
-                    C2S::Hello { device_id, device_name } => {
+                    C2S::Hello { device_id, device_name, media_port } => {
                         if !inner.is_coordinator() {
                             break;
                         }
                         let (session_id, coordinator_id) = inner.session_ids();
                         let my_port = inner.lock().port;
+                        let addr = peer_ip.clone().unwrap_or_default();
                         inner.register_conn(device_id.clone(), tx.clone());
-                        inner.add_member(&device_id, &device_name, String::new(), my_port);
+                        inner.add_member(&device_id, &device_name, addr, my_port, media_port);
                         let _ = tx.send(WsMessage::Text(
                             serde_json::to_string(&S2C::Welcome { session_id, coordinator_id }).unwrap(),
                         ));
                         my_id = Some(device_id);
+                    }
+                    C2S::ClockQuery { query_sent_us } => {
+                        let reply_sent = inner
+                            .media()
+                            .map(|m| m.now_session_us())
+                            .unwrap_or(query_sent_us as u128) as u64;
+                        let reply = S2C::ClockReply {
+                            query_sent_us,
+                            query_received_us: reply_sent,
+                            reply_sent_us: reply_sent,
+                        };
+                        if let Ok(payload) = serde_json::to_string(&reply) {
+                            let _ = tx.send(WsMessage::Text(payload));
+                        }
                     }
                     other => inner.on_c2s(other),
                 }
@@ -924,9 +1112,11 @@ async fn run_member_loop(inner: Arc<SessionInner>, coord: SocketAddr) {
         let connected = match connect_async(format!("ws://{coord}")).await {
             Ok((ws, _)) => {
                 let (mut ws_write, mut ws_read) = ws.split();
+                let media_port = inner.lock().media_port;
                 let hello = C2S::Hello {
                     device_id: inner.my_id(),
                     device_name: inner.my_name(),
+                    media_port,
                 };
                 if let Ok(payload) = serde_json::to_string(&hello) {
                     let _ = ws_write.send(WsMessage::Text(payload)).await;
@@ -940,15 +1130,27 @@ async fn run_member_loop(inner: Arc<SessionInner>, coord: SocketAddr) {
                         }
                     }
                 });
+                let mut ntp = tokio::time::interval(Duration::from_secs(2));
+                ntp.tick().await;
                 loop {
-                    match ws_read.next().await {
-                        Some(Ok(WsMessage::Text(t))) => {
-                            if let Ok(s2c) = serde_json::from_str::<S2C>(&t) {
-                                inner.apply_s2c(s2c);
+                    tokio::select! {
+                        _ = ntp.tick() => {
+                            if let Some(engine) = inner.media() {
+                                let t0 = engine.now_local_us();
+                                inner.send_to_coordinator(&C2S::ClockQuery { query_sent_us: t0 as u64 });
                             }
                         }
-                        Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
-                        _ => {}
+                        msg = ws_read.next() => {
+                            match msg {
+                                Some(Ok(WsMessage::Text(t))) => {
+                                    if let Ok(s2c) = serde_json::from_str::<S2C>(&t) {
+                                        inner.apply_s2c(s2c);
+                                    }
+                                }
+                                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 writer.abort();

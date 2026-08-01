@@ -6,12 +6,16 @@ pub enum C2S {
     Hello {
         device_id: String,
         device_name: String,
+        media_port: u16,
     },
     RequestTransmit {
         device_id: String,
     },
     ReleaseTransmit {
         device_id: String,
+    },
+    ClockQuery {
+        query_sent_us: u64,
     },
     Leave,
 }
@@ -45,6 +49,11 @@ pub enum S2C {
     TransmitDenied {
         device_id: String,
     },
+    ClockReply {
+        query_sent_us: u64,
+        query_received_us: u64,
+        reply_sent_us: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,4 +62,5 @@ pub struct MemberWire {
     pub device_name: String,
     pub addr: String,
     pub port: u16,
+    pub media_port: u16,
 }

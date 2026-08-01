@@ -23,6 +23,10 @@ impl SessionClock {
         self.session_id
     }
 
+    pub fn set_session_id(&mut self, session_id: u64) {
+        self.session_id = session_id;
+    }
+
     pub fn now_us(&self) -> u128 {
         self.start.elapsed().as_micros()
     }

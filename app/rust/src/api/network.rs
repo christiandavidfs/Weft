@@ -157,6 +157,69 @@ pub fn network_events(event_sink: StreamSink<NetworkEventView>) {
     wire_event_callback();
 }
 
+#[derive(Debug, Clone)]
+pub struct MediaStatsView {
+    pub session_active: bool,
+    pub is_transmitter: bool,
+    pub media_port: u16,
+    pub received_packets: u64,
+    pub transmitted_packets: u64,
+    pub clock_synced: bool,
+    pub clock_offset_us: i64,
+    pub clock_rtt_us: u64,
+    pub last_error: String,
+    pub buffered_packets: usize,
+    pub buffered_us: u64,
+}
+
+impl From<weft_core::media::MediaStats> for MediaStatsView {
+    fn from(s: weft_core::media::MediaStats) -> Self {
+        let playback = s.playback.as_ref();
+        MediaStatsView {
+            session_active: s.session_active,
+            is_transmitter: s.is_transmitter,
+            media_port: s.media_port,
+            received_packets: s.received_packets,
+            transmitted_packets: s.transmitted_packets,
+            clock_synced: s.clock_synced,
+            clock_offset_us: s.clock_offset_us,
+            clock_rtt_us: s.clock_rtt_us as u64,
+            last_error: s.last_error,
+            buffered_packets: playback.map(|p| p.buffered_packets).unwrap_or(0),
+            buffered_us: playback.map(|p| p.buffered_us).unwrap_or(0),
+        }
+    }
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_start_with(device_name: String, enable_audio: bool) -> Result<(), String> {
+    let engine = NetworkEngine::start_with(device_name, enable_audio).map_err(|e| e.to_string())?;
+    {
+        let mut guard = engine_ref().lock().unwrap();
+        *guard = Some(engine);
+    }
+    wire_event_callback();
+    Ok(())
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_media_stats() -> Option<MediaStatsView> {
+    engine_ref()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|e| e.media_stats())
+        .map(Into::into)
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_transmit_file(path: String) -> Result<(), String> {
+    match engine_ref().lock().unwrap().as_ref() {
+        Some(engine) => engine.transmit_file(&path),
+        None => Err("red no iniciada".to_string()),
+    }
+}
+
 #[flutter_rust_bridge::frb(sync)]
 pub fn network_request_transmit() {
     if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
