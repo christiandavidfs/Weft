@@ -96,15 +96,11 @@ fn write_wav(path: &std::path::Path, sample_rate: u32, samples: &[i16], channels
     }
 }
 
-#[test]
-fn media_stream_flows_from_transmitter_to_member() {
-    let _guard = SERIAL.lock().unwrap();
-    let dir = std::env::temp_dir().join(format!("weft_media_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_tone_wav(dir: &std::path::Path, seconds: usize) -> std::path::PathBuf {
     let wav = dir.join("tone.wav");
     let sample_rate = 48000u32;
     let channels = 2u16;
-    let frames = sample_rate as usize; // 1 segundo
+    let frames = sample_rate as usize * seconds;
     let mut samples = Vec::with_capacity(frames * channels as usize);
     for i in 0..frames {
         let v = ((i as f32) * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32)
@@ -114,6 +110,15 @@ fn media_stream_flows_from_transmitter_to_member() {
         samples.push(v);
     }
     write_wav(&wav, sample_rate, &samples, channels);
+    wav
+}
+
+#[test]
+fn media_stream_flows_from_transmitter_to_member() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_media_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 1);
 
     let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
     let b = NetworkEngine::start_with("Beta".to_string(), false).unwrap();
@@ -162,6 +167,63 @@ fn media_stream_flows_from_transmitter_to_member() {
         coord.status().transmitter_id.is_empty()
     });
     assert!(finished, "el token no se liberó al terminar: {:?}", coord.status());
+
+    a.stop();
+    b.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn receiver_plays_stream_through_cpal() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_play_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 2);
+
+    // El miembro habilita la salida de audio real (cpal).
+    let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
+    let b = NetworkEngine::start_with("Beta".to_string(), true).unwrap();
+
+    let sa = || a.status();
+    let sb = || b.status();
+
+    let formed = wait_until(Duration::from_secs(15), || {
+        let sa = sa();
+        let sb = sb();
+        let (ra, rb) = (sa.role.as_str(), sb.role.as_str());
+        let both_members = sa.members.len() == 2 && sb.members.len() == 2;
+        ((ra == "coordinator" && rb == "member") || (ra == "member" && rb == "coordinator"))
+            && both_members
+    });
+    assert!(formed, "no se formó la sesión: A={:?} B={:?}", sa(), sb());
+
+    let (coord, member): (&NetworkEngine, &NetworkEngine) = if sa().role == "coordinator" {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+
+    coord.request_transmit();
+    let granted = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == coord.status().device_id
+    });
+    assert!(granted, "el coordinador no obtuvo el token: {:?}", sa());
+
+    coord.transmit_file(wav.to_str().unwrap()).expect("transmit_file falló");
+
+    // El receptor reproduce: los paquetes se convierten en frames de audio real.
+    let played = wait_until(Duration::from_secs(20), || {
+        member
+            .media_stats()
+            .and_then(|m| m.playback)
+            .map(|p| p.played_frames > 0 && p.buffered_packets == 0)
+            .unwrap_or(false)
+    });
+    assert!(
+        played,
+        "el receptor no reprodujo el stream: {:?}",
+        member.media_stats()
+    );
 
     a.stop();
     b.stop();
