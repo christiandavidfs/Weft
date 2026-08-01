@@ -1,0 +1,15 @@
+# Rust
+/target/
+**/target/
+
+# Flutter/Dart
+.dart_tool/
+.packages
+pubspec.lock
+build/
+.flutter-plugins*
+*.iml
+.idea/
+
+# macOS
+.DS_Store
