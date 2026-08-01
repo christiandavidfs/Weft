@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/engine.dart';
+import 'api/network.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'frb_generated.dart';
@@ -66,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -707373027;
+  int get rustContentHash => -1540478063;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -87,6 +88,22 @@ abstract class RustLibApi extends BaseApi {
   void crateApiEngineEngineStopSession();
 
   Future<void> crateApiSimpleInitApp();
+
+  void crateApiNetworkNetworkApproveTransmit({required String deviceId});
+
+  void crateApiNetworkNetworkDenyTransmit({required String deviceId});
+
+  Stream<NetworkEventView> crateApiNetworkNetworkEvents();
+
+  void crateApiNetworkNetworkReleaseTransmit();
+
+  void crateApiNetworkNetworkRequestTransmit();
+
+  void crateApiNetworkNetworkStart({required String deviceName});
+
+  NetworkStatusView crateApiNetworkNetworkStatus();
+
+  void crateApiNetworkNetworkStop();
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -212,6 +229,208 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSimpleInitAppConstMeta =>
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
+  @override
+  void crateApiNetworkNetworkApproveTransmit({required String deviceId}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(deviceId, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkApproveTransmitConstMeta,
+        argValues: [deviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkApproveTransmitConstMeta =>
+      const TaskConstMeta(
+        debugName: "network_approve_transmit",
+        argNames: ["deviceId"],
+      );
+
+  @override
+  void crateApiNetworkNetworkDenyTransmit({required String deviceId}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(deviceId, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkDenyTransmitConstMeta,
+        argValues: [deviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkDenyTransmitConstMeta =>
+      const TaskConstMeta(
+        debugName: "network_deny_transmit",
+        argNames: ["deviceId"],
+      );
+
+  @override
+  Stream<NetworkEventView> crateApiNetworkNetworkEvents() {
+    final eventSink = RustStreamSink<NetworkEventView>();
+    handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_StreamSink_network_event_view_Sse(eventSink, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkEventsConstMeta,
+        argValues: [eventSink],
+        apiImpl: this,
+      ),
+    );
+    return eventSink.stream;
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkEventsConstMeta =>
+      const TaskConstMeta(debugName: "network_events", argNames: ["eventSink"]);
+
+  @override
+  void crateApiNetworkNetworkReleaseTransmit() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkReleaseTransmitConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkReleaseTransmitConstMeta =>
+      const TaskConstMeta(debugName: "network_release_transmit", argNames: []);
+
+  @override
+  void crateApiNetworkNetworkRequestTransmit() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkRequestTransmitConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkRequestTransmitConstMeta =>
+      const TaskConstMeta(debugName: "network_request_transmit", argNames: []);
+
+  @override
+  void crateApiNetworkNetworkStart({required String deviceName}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(deviceName, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNetworkNetworkStartConstMeta,
+        argValues: [deviceName],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkStartConstMeta =>
+      const TaskConstMeta(debugName: "network_start", argNames: ["deviceName"]);
+
+  @override
+  NetworkStatusView crateApiNetworkNetworkStatus() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_network_status_view,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkStatusConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkStatusConstMeta =>
+      const TaskConstMeta(debugName: "network_status", argNames: []);
+
+  @override
+  void crateApiNetworkNetworkStop() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNetworkNetworkStopConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNetworkNetworkStopConstMeta =>
+      const TaskConstMeta(debugName: "network_stop", argNames: []);
+
+  @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return AnyhowException(raw as String);
+  }
+
+  @protected
+  RustStreamSink<NetworkEventView> dco_decode_StreamSink_network_event_view_Sse(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
   @protected
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -231,15 +450,96 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
+  List<MemberView> dco_decode_list_member_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_member_view).toList();
+  }
+
+  @protected
+  List<PeerView> dco_decode_list_peer_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_peer_view).toList();
+  }
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
   }
 
   @protected
+  MemberView dco_decode_member_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return MemberView(
+      deviceId: dco_decode_String(arr[0]),
+      deviceName: dco_decode_String(arr[1]),
+      addr: dco_decode_String(arr[2]),
+      isTransmitter: dco_decode_bool(arr[3]),
+      isMe: dco_decode_bool(arr[4]),
+    );
+  }
+
+  @protected
+  NetworkEventView dco_decode_network_event_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return NetworkEventView(
+      kind: dco_decode_String(arr[0]),
+      deviceId: dco_decode_String(arr[1]),
+      deviceName: dco_decode_String(arr[2]),
+      message: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
+  NetworkStatusView dco_decode_network_status_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return NetworkStatusView(
+      running: dco_decode_bool(arr[0]),
+      deviceId: dco_decode_String(arr[1]),
+      deviceName: dco_decode_String(arr[2]),
+      role: dco_decode_String(arr[3]),
+      sessionId: dco_decode_String(arr[4]),
+      coordinatorId: dco_decode_String(arr[5]),
+      transmitterId: dco_decode_String(arr[6]),
+      members: dco_decode_list_member_view(arr[7]),
+      peers: dco_decode_list_peer_view(arr[8]),
+      pendingTransmitRequests: dco_decode_list_String(arr[9]),
+    );
+  }
+
+  @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
+  PeerView dco_decode_peer_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return PeerView(
+      deviceId: dco_decode_String(arr[0]),
+      deviceName: dco_decode_String(arr[1]),
+      addr: dco_decode_String(arr[2]),
+      isCoordinator: dco_decode_bool(arr[3]),
+    );
   }
 
   @protected
@@ -275,6 +575,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_String(deserializer);
+    return AnyhowException(inner);
+  }
+
+  @protected
+  RustStreamSink<NetworkEventView> sse_decode_StreamSink_network_event_view_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
@@ -294,10 +609,107 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <String>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<MemberView> sse_decode_list_member_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <MemberView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_member_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PeerView> sse_decode_list_peer_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PeerView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_peer_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  MemberView sse_decode_member_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_deviceName = sse_decode_String(deserializer);
+    var var_addr = sse_decode_String(deserializer);
+    var var_isTransmitter = sse_decode_bool(deserializer);
+    var var_isMe = sse_decode_bool(deserializer);
+    return MemberView(
+      deviceId: var_deviceId,
+      deviceName: var_deviceName,
+      addr: var_addr,
+      isTransmitter: var_isTransmitter,
+      isMe: var_isMe,
+    );
+  }
+
+  @protected
+  NetworkEventView sse_decode_network_event_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_String(deserializer);
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_deviceName = sse_decode_String(deserializer);
+    var var_message = sse_decode_String(deserializer);
+    return NetworkEventView(
+      kind: var_kind,
+      deviceId: var_deviceId,
+      deviceName: var_deviceName,
+      message: var_message,
+    );
+  }
+
+  @protected
+  NetworkStatusView sse_decode_network_status_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_running = sse_decode_bool(deserializer);
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_deviceName = sse_decode_String(deserializer);
+    var var_role = sse_decode_String(deserializer);
+    var var_sessionId = sse_decode_String(deserializer);
+    var var_coordinatorId = sse_decode_String(deserializer);
+    var var_transmitterId = sse_decode_String(deserializer);
+    var var_members = sse_decode_list_member_view(deserializer);
+    var var_peers = sse_decode_list_peer_view(deserializer);
+    var var_pendingTransmitRequests = sse_decode_list_String(deserializer);
+    return NetworkStatusView(
+      running: var_running,
+      deviceId: var_deviceId,
+      deviceName: var_deviceName,
+      role: var_role,
+      sessionId: var_sessionId,
+      coordinatorId: var_coordinatorId,
+      transmitterId: var_transmitterId,
+      members: var_members,
+      peers: var_peers,
+      pendingTransmitRequests: var_pendingTransmitRequests,
+    );
   }
 
   @protected
@@ -309,6 +721,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  PeerView sse_decode_peer_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_deviceName = sse_decode_String(deserializer);
+    var var_addr = sse_decode_String(deserializer);
+    var var_isCoordinator = sse_decode_bool(deserializer);
+    return PeerView(
+      deviceId: var_deviceId,
+      deviceName: var_deviceName,
+      addr: var_addr,
+      isCoordinator: var_isCoordinator,
+    );
   }
 
   @protected
@@ -352,6 +779,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.message, serializer);
+  }
+
+  @protected
+  void sse_encode_StreamSink_network_event_view_Sse(
+    RustStreamSink<NetworkEventView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_network_event_view,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
@@ -370,6 +823,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_member_view(
+    List<MemberView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_member_view(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_peer_view(
+    List<PeerView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_peer_view(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -380,6 +866,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_member_view(MemberView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.deviceName, serializer);
+    sse_encode_String(self.addr, serializer);
+    sse_encode_bool(self.isTransmitter, serializer);
+    sse_encode_bool(self.isMe, serializer);
+  }
+
+  @protected
+  void sse_encode_network_event_view(
+    NetworkEventView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.kind, serializer);
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.deviceName, serializer);
+    sse_encode_String(self.message, serializer);
+  }
+
+  @protected
+  void sse_encode_network_status_view(
+    NetworkStatusView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.running, serializer);
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.deviceName, serializer);
+    sse_encode_String(self.role, serializer);
+    sse_encode_String(self.sessionId, serializer);
+    sse_encode_String(self.coordinatorId, serializer);
+    sse_encode_String(self.transmitterId, serializer);
+    sse_encode_list_member_view(self.members, serializer);
+    sse_encode_list_peer_view(self.peers, serializer);
+    sse_encode_list_String(self.pendingTransmitRequests, serializer);
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -387,6 +913,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_box_autoadd_u_64(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_peer_view(PeerView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.deviceName, serializer);
+    sse_encode_String(self.addr, serializer);
+    sse_encode_bool(self.isCoordinator, serializer);
   }
 
   @protected

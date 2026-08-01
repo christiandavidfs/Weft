@@ -1,5 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'dart:io' show Platform;
+
 import 'package:weft/src/rust/api/engine.dart';
+import 'package:weft/src/rust/api/network.dart';
 import 'package:weft/src/rust/frb_generated.dart';
 
 Future<void> main() async {
@@ -30,92 +35,316 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  bool _active = false;
-  BigInt? _sessionId;
+  final TextEditingController _nameController = TextEditingController();
+  NetworkStatusView _status = emptyStatus();
+  final List<String> _events = [];
+  StreamSubscription<NetworkEventView>? _sub;
+  Timer? _poll;
 
-  void _startSession() {
-    setState(() {
-      _sessionId = engineStartSession();
-      _active = true;
+  @override
+  void initState() {
+    super.initState();
+    _nameController.text = _defaultName();
+    _sub = networkEvents().listen((ev) {
+      setState(() {
+        _events.insert(0, '[${ev.kind}] ${ev.deviceName.isNotEmpty ? ev.deviceName : ev.deviceId}: ${ev.message}');
+        if (_events.length > 8) _events.removeLast();
+        _status = networkStatus();
+      });
     });
-  }
-
-  void _stopSession() {
-    engineStopSession();
-    setState(() {
-      _sessionId = null;
-      _active = false;
+    _poll = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _status = networkStatus());
     });
   }
 
   @override
+  void dispose() {
+    _sub?.cancel();
+    _poll?.cancel();
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  String _defaultName() {
+    try {
+      final host = Platform.localHostname.split('.').first;
+      return host.isEmpty ? 'dispositivo' : host;
+    } catch (_) {
+      return 'dispositivo';
+    }
+  }
+
+  Future<void> _start() async {
+    final name = _nameController.text.trim();
+    try {
+      networkStart(deviceName: name.isEmpty ? 'dispositivo' : name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+    setState(() => _status = networkStatus());
+  }
+
+  void _stop() {
+    networkStop();
+    setState(() => _status = networkStatus());
+  }
+
+  String _displayName(String id) {
+    if (id.isEmpty) return '—';
+    final member = _status.members.where((m) => m.deviceId == id);
+    if (member.isNotEmpty) return member.first.deviceName;
+    final peer = _status.peers.where((p) => p.deviceId == id);
+    if (peer.isNotEmpty) return peer.first.deviceName;
+    if (id == _status.deviceId) return _status.deviceName;
+    return id.substring(0, 8);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final status = engineStatus();
+    final running = _status.running;
+    final isCoordinator = running && _status.role == 'coordinator';
+    final amTransmitter = running && _status.transmitterId == _status.deviceId;
     return Scaffold(
-      appBar: AppBar(title: const Text('Weft — Fase 0')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Core: ${bridgeVersion()}',
-                style: Theme.of(context).textTheme.titleMedium,
+      appBar: AppBar(title: const Text('Weft — Fase 1')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _nameController,
+                    enabled: !running,
+                    decoration: const InputDecoration(
+                      labelText: 'Nombre del dispositivo',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: running ? null : _start,
+                          icon: const Icon(Icons.play_arrow),
+                          label: const Text('Iniciar red'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: running ? _stop : null,
+                          icon: const Icon(Icons.stop),
+                          label: const Text('Detener'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: 24),
-              _StatusRow(
-                label: 'Sesión activa',
-                value: _active ? 'sí (id $_sessionId)' : 'no',
+            ),
+            const SizedBox(height: 12),
+            _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Estado de la sesión',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  _row('Rol', running ? _status.role : 'off'),
+                  _row('Sesión',
+                      running ? _shortId(_status.sessionId) : '—'),
+                  _row('Coordinador', running ? _displayName(_status.coordinatorId) : '—'),
+                  _row('Transmisor', running ? _displayName(_status.transmitterId) : '—'),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: running && !amTransmitter ? _requestTransmit : null,
+                          icon: const Icon(Icons.radio),
+                          label: const Text('Pedir transmitir'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: amTransmitter ? _releaseTransmit : null,
+                          icon: const Icon(Icons.stop_circle),
+                          label: const Text('Liberar'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              _StatusRow(
-                label: 'Latencia objetivo',
-                value: '${status.targetLatencyMs} ms',
-              ),
-              _StatusRow(
-                label: 'Reloj de sesión',
-                value: status.elapsedUs != null ? '${status.elapsedUs} µs' : '—',
-              ),
-              const SizedBox(height: 32),
-              FilledButton.icon(
-                onPressed: _active ? null : _startSession,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Iniciar sesión'),
-              ),
+            ),
+            if (isCoordinator && _status.pendingTransmitRequests.isNotEmpty) ...[
               const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _active ? _stopSession : null,
-                icon: const Icon(Icons.stop),
-                label: const Text('Detener sesión'),
+              _card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('Solicitudes de transmisión',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    for (final id in _status.pendingTransmitRequests)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text('${_displayName(id)} pide el token'),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.check, color: Colors.green),
+                              onPressed: () => networkApproveTransmit(deviceId: id),
+                              tooltip: 'Aprobar',
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close, color: Colors.red),
+                              onPressed: () => networkDenyTransmit(deviceId: id),
+                              tooltip: 'Rechazar',
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ],
-          ),
+            const SizedBox(height: 12),
+            _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Miembros (${_status.members.length})',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  if (_status.members.isEmpty)
+                    const Text('Aún no hay miembros en la sesión.')
+                  else
+                    for (final m in _status.members)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.devices),
+                        title: Text(m.isMe ? '${m.deviceName} (tú)' : m.deviceName),
+                        subtitle: Text(m.addr.isEmpty ? _status.role : m.addr),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (m.deviceId == _status.coordinatorId)
+                              const Chip(label: Text('coord'), visualDensity: VisualDensity.compact),
+                            if (m.isTransmitter)
+                              const Chip(label: Text('tx'), visualDensity: VisualDensity.compact),
+                          ],
+                        ),
+                      ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Dispositivos descubiertos (${_status.peers.length})',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  if (_status.peers.isEmpty)
+                    const Text('Esperando dispositivos en la red...')
+                  else
+                    for (final p in _status.peers)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.wifi_tethering),
+                        title: Text('${p.deviceName} ${p.isCoordinator ? '(coord)' : ''}'),
+                        subtitle: Text(p.addr),
+                      ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Eventos', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  if (_events.isEmpty)
+                    const Text('Sin eventos todavía.')
+                  else
+                    for (final e in _events)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(e, style: Theme.of(context).textTheme.bodySmall),
+                      ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Core: ${bridgeVersion()}',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
         ),
       ),
     );
   }
-}
 
-class _StatusRow extends StatelessWidget {
-  const _StatusRow({required this.label, required this.value});
+  void _requestTransmit() {
+    networkRequestTransmit();
+    setState(() => _status = networkStatus());
+  }
 
-  final String label;
-  final String value;
+  void _releaseTransmit() {
+    networkReleaseTransmit();
+    setState(() => _status = networkStatus());
+  }
 
-  @override
-  Widget build(BuildContext context) {
+  String _shortId(String id) => id.isEmpty ? '—' : '${id.substring(0, 8)}…';
+
+  Widget _card({required Widget child}) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(padding: const EdgeInsets.all(16), child: child),
+    );
+  }
+
+  Widget _row(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(
-            '$label: ',
-            style: const TextStyle(fontWeight: FontWeight.bold),
+          SizedBox(
+            width: 110,
+            child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
-          Text(value),
+          Expanded(child: Text(value)),
         ],
       ),
     );
   }
 }
+
+NetworkStatusView emptyStatus() => const NetworkStatusView(
+      running: false,
+      deviceId: '',
+      deviceName: '',
+      role: 'off',
+      sessionId: '',
+      coordinatorId: '',
+      transmitterId: '',
+      members: [],
+      peers: [],
+      pendingTransmitRequests: [],
+    );

@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/engine.dart';
+import 'api/network.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
@@ -19,6 +20,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw);
+
+  @protected
+  RustStreamSink<NetworkEventView> dco_decode_StreamSink_network_event_view_Sse(
+    dynamic raw,
+  );
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -28,10 +37,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<MemberView> dco_decode_list_member_view(dynamic raw);
+
+  @protected
+  List<PeerView> dco_decode_list_peer_view(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  MemberView dco_decode_member_view(dynamic raw);
+
+  @protected
+  NetworkEventView dco_decode_network_event_view(dynamic raw);
+
+  @protected
+  NetworkStatusView dco_decode_network_status_view(dynamic raw);
+
+  @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  PeerView dco_decode_peer_view(dynamic raw);
 
   @protected
   SessionStatusView dco_decode_session_status_view(dynamic raw);
@@ -46,6 +76,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<NetworkEventView> sse_decode_StreamSink_network_event_view_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
@@ -55,10 +93,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<MemberView> sse_decode_list_member_view(SseDeserializer deserializer);
+
+  @protected
+  List<PeerView> sse_decode_list_peer_view(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  MemberView sse_decode_member_view(SseDeserializer deserializer);
+
+  @protected
+  NetworkEventView sse_decode_network_event_view(SseDeserializer deserializer);
+
+  @protected
+  NetworkStatusView sse_decode_network_status_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  PeerView sse_decode_peer_view(SseDeserializer deserializer);
 
   @protected
   SessionStatusView sse_decode_session_status_view(
@@ -78,6 +139,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_network_event_view_Sse(
+    RustStreamSink<NetworkEventView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
@@ -87,13 +160,43 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_member_view(
+    List<MemberView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_peer_view(List<PeerView> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_member_view(MemberView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_network_event_view(
+    NetworkEventView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_network_status_view(
+    NetworkStatusView self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_peer_view(PeerView self, SseSerializer serializer);
 
   @protected
   void sse_encode_session_status_view(
