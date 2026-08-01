@@ -98,7 +98,7 @@ flutter_rust_bridge_codegen generate
 ## Roadmap
 
 - [x] **Fase 0**: esqueleto — core Rust + bridge + app multiplataforma compilando
-- [ ] **Fase 1**: sesión — discovery mDNS, coordinador y membresía
+- [x] **Fase 1**: sesión — discovery mDNS, coordinador y membresía, token de transmisión con aprobación
 - [ ] **Fase 2**: sincronía básica — un dispositivo transmite un archivo, los demás reproducen alineados
 - [ ] **Fase 3**: captura de audio del sistema (loopback por plataforma; Android: solo archivos)
 - [ ] **Fase 4**: handoff de roles con crossfade
