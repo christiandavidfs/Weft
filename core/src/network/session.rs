@@ -556,6 +556,14 @@ impl NetworkEngine {
     pub fn transmit_file(&self, path: &str) -> Result<(), String> {
         self.inner.transmit_file(path)
     }
+
+    pub fn start_capture(&self, device_name: Option<&str>) -> Result<(), String> {
+        self.inner.start_capture(device_name)
+    }
+
+    pub fn stop_capture(&self) {
+        self.inner.stop_capture();
+    }
 }
 
 impl SessionInner {
@@ -823,6 +831,29 @@ impl SessionInner {
         let name = self.my_name();
         self.emit("transmit_started", &self.my_id(), &name, path);
         Ok(())
+    }
+
+    /// Start optional microphone capture and stream it to all members.
+    /// Requires the transmit token and an active session.
+    pub fn start_capture(&self, device_name: Option<&str>) -> Result<(), String> {
+        let has_token = {
+            let s = self.lock();
+            s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+        };
+        if !has_token {
+            return Err("no tengo el token de transmisión".to_string());
+        }
+        let Some(engine) = self.media() else {
+            return Err("media no disponible".to_string());
+        };
+        engine.start_capture(device_name)
+    }
+
+    /// Stop optional microphone capture. No-op if not capturing.
+    pub fn stop_capture(&self) {
+        if let Some(engine) = self.media() {
+            engine.stop_capture();
+        }
     }
 
     // ---- coordinator incoming messages ----

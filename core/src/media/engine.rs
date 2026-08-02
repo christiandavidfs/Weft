@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::media::capture::{check_input_device, open_capture, silence_frame, StreamResampler};
 use crate::media::clock::MediaClock;
 use crate::media::jitter::JitterBuffer;
 use crate::media::packet::AudioPacket;
 use crate::media::sink::{spawn_playback, PlaybackState, PlaybackStats};
 use crate::media::source::{decode_file_to_pcm, PacketizedSource};
 use crate::media::transport::MediaSocket;
-use crate::media::FRAME_US;
+use crate::media::{CHANNELS, FRAME_SAMPLES, FRAME_US, SAMPLE_RATE};
 
 const RX_TIMEOUT: Duration = Duration::from_millis(50);
 const JITTER_CAPACITY_US: u128 = 200_000;
@@ -30,6 +31,7 @@ pub struct MediaStats {
     pub media_port: u16,
     pub received_packets: u64,
     pub transmitted_packets: u64,
+    pub capturing: bool,
     pub clock_synced: bool,
     pub clock_offset_us: i64,
     pub clock_rtt_us: u128,
@@ -56,12 +58,21 @@ pub struct MediaEngine {
     received: Arc<AtomicU64>,
     transmitted: Arc<AtomicU64>,
     transmitting: Arc<AtomicBool>,
+    capturing: Arc<AtomicBool>,
+    capture: Mutex<Option<CaptureState>>,
     last_error: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
     #[allow(dead_code)]
     rx_thread: thread::JoinHandle<()>,
     #[allow(dead_code)]
     pb_thread: Option<thread::JoinHandle<()>>,
+}
+
+/// A running live capture: keeps the cpal stream alive and owns the capture
+/// transmitter thread.
+struct CaptureState {
+    stop: Arc<AtomicBool>,
+    thread: thread::JoinHandle<()>,
 }
 
 impl MediaEngine {
@@ -104,6 +115,8 @@ impl MediaEngine {
             received,
             transmitted: Arc::new(AtomicU64::new(0)),
             transmitting: Arc::new(AtomicBool::new(false)),
+            capturing: Arc::new(AtomicBool::new(false)),
+            capture: Mutex::new(None),
             last_error: Arc::new(Mutex::new(String::new())),
             stop,
             rx_thread,
@@ -147,11 +160,14 @@ impl MediaEngine {
     }
 
     pub fn leave_session(&self) {
-        let mut s = self.state.lock().unwrap();
-        s.session_active = false;
-        s.is_transmitter = false;
-        s.members.clear();
+        {
+            let mut s = self.state.lock().unwrap();
+            s.session_active = false;
+            s.is_transmitter = false;
+            s.members.clear();
+        }
         self.transmitting.store(false, Ordering::Relaxed);
+        self.stop_capture();
     }
 
     pub fn update_members(&self, members: Vec<MemberMedia>) {
@@ -162,7 +178,105 @@ impl MediaEngine {
         self.state.lock().unwrap().is_transmitter = active;
         if !active {
             self.transmitting.store(false, Ordering::Relaxed);
+            self.stop_capture();
         }
+    }
+
+    /// Start capturing from an input device (by name, or the default) and
+    /// streaming it to all members. Optional: can be stopped at any time with
+    /// `stop_capture`. Requires an active session.
+    pub fn start_capture(&self, device_name: Option<&str>) -> Result<(), String> {
+        if self.capturing.swap(true, Ordering::Relaxed) {
+            return Err("ya hay una captura en curso".to_string());
+        }
+        let (session_tag, base_pts, base_local) = {
+            let c = self.clock.lock().unwrap();
+            (c.session_id(), (c.now_session_us() + TARGET_LATENCY_US) as u64, c.now_local_us())
+        };
+        let active = self.state.lock().unwrap().session_active;
+        if !active || session_tag == 0 {
+            self.capturing.store(false, Ordering::Relaxed);
+            return Err("no hay sesión activa".to_string());
+        }
+
+        // Fail fast if the device doesn't exist. The stream itself is opened on
+        // the capture thread (cpal::Stream is !Send and lives there).
+        check_input_device(device_name).inspect_err(|e| {
+            self.capturing.store(false, Ordering::Relaxed);
+            *self.last_error.lock().unwrap() = e.clone();
+        })?;
+
+        let device_name = device_name.map(|s| s.to_string());
+        let t_clock = self.clock.clone();
+        let t_state = self.state.clone();
+        let t_socket = match self.socket.try_clone() {
+            Ok(s) => s,
+            Err(e) => {
+                self.capturing.store(false, Ordering::Relaxed);
+                return Err(format!("socket: {e}"));
+            }
+        };
+        let t_transmitted = self.transmitted.clone();
+        let t_errors = self.last_error.clone();
+        let t_capturing = self.capturing.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let t_stop = stop.clone();
+        let t_events = self.events.clone();
+
+        let thread = thread::spawn(move || {
+            let result = (|| {
+                let cap = open_capture(device_name.as_deref())?;
+                let rx = cap.rx.clone();
+                let rate = cap.rate;
+                let ctx = CaptureContext {
+                    clock: t_clock,
+                    state: t_state,
+                    socket: t_socket,
+                    session_tag,
+                    base_pts,
+                    base_local,
+                };
+                let res = run_capture_transmitter(ctx, rx, rate, &t_transmitted, &t_stop);
+                drop(cap); // stops the device stream (owned on this thread)
+                res
+            })();
+            match result {
+                Ok(()) => {
+                    if let Some(cb) = t_events.lock().unwrap().as_ref() {
+                        cb("capture_stopped", "captura detenida".to_string());
+                    }
+                }
+                Err(e) => {
+                    *t_errors.lock().unwrap() = e.clone();
+                    if let Some(cb) = t_events.lock().unwrap().as_ref() {
+                        cb("capture_error", e);
+                    }
+                }
+            }
+            t_capturing.store(false, Ordering::Relaxed);
+        });
+
+        *self.capture.lock().unwrap() = Some(CaptureState { stop, thread });
+        if let Some(cb) = self.events.lock().unwrap().as_ref() {
+            cb("capture_started", "captura iniciada".to_string());
+        }
+        Ok(())
+    }
+
+    /// Stop live capture (optional). No-op if not capturing.
+    pub fn stop_capture(&self) {
+        self.capturing.store(false, Ordering::Relaxed);
+        if let Some(st) = self.capture.lock().unwrap().take() {
+            st.stop.store(true, Ordering::Relaxed);
+            let _ = st.thread.join();
+            if let Some(cb) = self.events.lock().unwrap().as_ref() {
+                cb("capture_stopped", "captura detenida".to_string());
+            }
+        }
+    }
+
+    pub fn is_capturing(&self) -> bool {
+        self.capturing.load(Ordering::Relaxed)
     }
 
     pub fn process_ntp(
@@ -256,6 +370,7 @@ impl MediaEngine {
             media_port: self.media_port(),
             received_packets: self.received.load(Ordering::Relaxed),
             transmitted_packets: self.transmitted.load(Ordering::Relaxed),
+            capturing: self.capturing.load(Ordering::Relaxed),
             clock_synced,
             clock_offset_us,
             clock_rtt_us,
@@ -336,4 +451,80 @@ fn run_transmitter(
         e.clear();
     }
     Ok(())
+}
+
+/// Live capture context: pacing clock, session state, socket, and stream timing.
+struct CaptureContext {
+    clock: Arc<Mutex<MediaClock>>,
+    state: Arc<Mutex<MediaState>>,
+    socket: MediaSocket,
+    session_tag: u64,
+    base_pts: u64,
+    base_local: u128,
+}
+
+/// Stream live microphone input to all members, one 20ms frame per packet,
+/// paced against the session timeline. Sends silence on underrun to keep the
+/// receivers' timeline continuous.
+fn run_capture_transmitter(
+    ctx: CaptureContext,
+    rx: flume::Receiver<Vec<i16>>,
+    rate: u32,
+    transmitted: &AtomicU64,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let CaptureContext { clock, state, socket, session_tag, base_pts, base_local } = ctx;
+    let mut resampler = StreamResampler::new(rate, SAMPLE_RATE);
+    let mut index = 0u64;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err("captura detenida".to_string());
+        }
+        let (active, is_tx) = {
+            let s = state.lock().unwrap();
+            (s.session_active, s.is_transmitter)
+        };
+        if !active || !is_tx {
+            return Err("captura detenida: se perdió el rol de transmisor".to_string());
+        }
+
+        let deadline = base_local + (index as u128) * FRAME_US as u128;
+        let now = clock.lock().map(|c| c.now_local_us()).unwrap_or(0);
+        if now < deadline {
+            thread::sleep(Duration::from_micros((deadline - now) as u64));
+        }
+
+        // Gather enough input for one 20ms frame (or give up -> silence).
+        while resampler.frames_needed_for(FRAME_SAMPLES) > 0 {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(chunk) => resampler.push(&chunk),
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    return Err("captura finalizada".to_string());
+                }
+                Err(flume::RecvTimeoutError::Timeout) => break,
+            }
+        }
+        let mut samples = resampler.take(FRAME_SAMPLES);
+        if samples.len() < FRAME_SAMPLES * CHANNELS as usize {
+            let mut full = silence_frame();
+            let to_copy = samples.len().min(full.len());
+            full[..to_copy].copy_from_slice(&samples[..to_copy]);
+            samples = full;
+        }
+
+        let pkt = AudioPacket::new(
+            session_tag,
+            index as u32,
+            base_pts + index * FRAME_US,
+            samples,
+            SAMPLE_RATE,
+            CHANNELS,
+        );
+        let targets: Vec<MemberMedia> = state.lock().unwrap().members.clone();
+        for m in &targets {
+            let _ = socket.send_packet(&pkt, m.media_addr);
+        }
+        transmitted.fetch_add(1, Ordering::Relaxed);
+        index += 1;
+    }
 }

@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod clock;
 pub mod engine;
 pub mod jitter;
@@ -12,6 +13,7 @@ pub const FRAME_MS: u64 = 20;
 pub const FRAME_SAMPLES: usize = ((SAMPLE_RATE as u64) * FRAME_MS / 1000) as usize;
 pub const FRAME_US: u64 = FRAME_MS * 1000;
 
+pub use capture::{input_devices, open_capture, StreamResampler};
 pub use clock::{ClockOffset, MediaClock};
 pub use engine::{MediaEngine, MediaStats, MemberMedia};
 pub use jitter::{JitterBuffer, JitterStats};

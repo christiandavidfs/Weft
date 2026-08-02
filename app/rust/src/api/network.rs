@@ -164,6 +164,7 @@ pub struct MediaStatsView {
     pub media_port: u16,
     pub received_packets: u64,
     pub transmitted_packets: u64,
+    pub capturing: bool,
     pub clock_synced: bool,
     pub clock_offset_us: i64,
     pub clock_rtt_us: u64,
@@ -181,6 +182,7 @@ impl From<weft_core::media::MediaStats> for MediaStatsView {
             media_port: s.media_port,
             received_packets: s.received_packets,
             transmitted_packets: s.transmitted_packets,
+            capturing: s.capturing,
             clock_synced: s.clock_synced,
             clock_offset_us: s.clock_offset_us,
             clock_rtt_us: s.clock_rtt_us as u64,
@@ -245,5 +247,25 @@ pub fn network_approve_transmit(device_id: String) {
 pub fn network_deny_transmit(device_id: String) {
     if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
         engine.deny_transmit(&device_id);
+    }
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_input_devices() -> Vec<String> {
+    weft_core::media::input_devices()
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_start_capture(device_name: Option<String>) -> Result<(), String> {
+    match engine_ref().lock().unwrap().as_ref() {
+        Some(engine) => engine.start_capture(device_name.as_deref()),
+        None => Err("red no iniciada".to_string()),
+    }
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_stop_capture() {
+    if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
+        engine.stop_capture();
     }
 }

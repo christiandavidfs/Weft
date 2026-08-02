@@ -46,12 +46,22 @@ void networkApproveTransmit({required String deviceId}) => RustLib.instance.api
 void networkDenyTransmit({required String deviceId}) =>
     RustLib.instance.api.crateApiNetworkNetworkDenyTransmit(deviceId: deviceId);
 
+List<String> networkInputDevices() =>
+    RustLib.instance.api.crateApiNetworkNetworkInputDevices();
+
+void networkStartCapture({String? deviceName}) => RustLib.instance.api
+    .crateApiNetworkNetworkStartCapture(deviceName: deviceName);
+
+void networkStopCapture() =>
+    RustLib.instance.api.crateApiNetworkNetworkStopCapture();
+
 class MediaStatsView {
   final bool sessionActive;
   final bool isTransmitter;
   final int mediaPort;
   final BigInt receivedPackets;
   final BigInt transmittedPackets;
+  final bool capturing;
   final bool clockSynced;
   final PlatformInt64 clockOffsetUs;
   final BigInt clockRttUs;
@@ -65,6 +75,7 @@ class MediaStatsView {
     required this.mediaPort,
     required this.receivedPackets,
     required this.transmittedPackets,
+    required this.capturing,
     required this.clockSynced,
     required this.clockOffsetUs,
     required this.clockRttUs,
@@ -80,6 +91,7 @@ class MediaStatsView {
       mediaPort.hashCode ^
       receivedPackets.hashCode ^
       transmittedPackets.hashCode ^
+      capturing.hashCode ^
       clockSynced.hashCode ^
       clockOffsetUs.hashCode ^
       clockRttUs.hashCode ^
@@ -97,6 +109,7 @@ class MediaStatsView {
           mediaPort == other.mediaPort &&
           receivedPackets == other.receivedPackets &&
           transmittedPackets == other.transmittedPackets &&
+          capturing == other.capturing &&
           clockSynced == other.clockSynced &&
           clockOffsetUs == other.clockOffsetUs &&
           clockRttUs == other.clockRttUs &&

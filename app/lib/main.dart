@@ -40,6 +40,8 @@ class _HomePageState extends State<HomePage> {
   NetworkStatusView _status = emptyStatus();
   MediaStatsView? _media;
   final List<String> _events = [];
+  List<String> _inputDevices = [];
+  String? _inputDevice;
   StreamSubscription<NetworkEventView>? _sub;
   Timer? _poll;
 
@@ -95,6 +97,7 @@ class _HomePageState extends State<HomePage> {
       _status = networkStatus();
       _media = networkMediaStats();
     });
+    _loadInputDevices();
   }
 
   void _stop() {
@@ -110,6 +113,29 @@ class _HomePageState extends State<HomePage> {
     if (path.isEmpty) return;
     try {
       networkTransmitFile(path: path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  void _loadInputDevices() {
+    try {
+      _inputDevices = networkInputDevices();
+    } catch (_) {
+      _inputDevices = [];
+    }
+  }
+
+  void _toggleCapture() {
+    final capturing = _media?.capturing ?? false;
+    try {
+      if (capturing) {
+        networkStopCapture();
+      } else {
+        networkStartCapture(deviceName: _inputDevice);
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
@@ -221,6 +247,38 @@ class _HomePageState extends State<HomePage> {
                       onPressed: _transmitFile,
                       icon: const Icon(Icons.upload_file),
                       label: const Text('Transmitir archivo'),
+                    ),
+                  ],
+                  if (amTransmitter) ...[
+                    const SizedBox(height: 12),
+                    const Divider(),
+                    Text('Captura de micrófono',
+                        style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 8),
+                    if (_inputDevices.isNotEmpty) ...[
+                      DropdownButtonFormField<String>(
+                        initialValue: _inputDevice,
+                        items: [
+                          for (final d in _inputDevices)
+                            DropdownMenuItem(value: d, child: Text(d)),
+                        ],
+                        onChanged: (v) => setState(() => _inputDevice = v),
+                        decoration: const InputDecoration(
+                          labelText: 'Dispositivo de entrada',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    FilledButton.tonalIcon(
+                      onPressed: _toggleCapture,
+                      icon: Icon((_media?.capturing ?? false)
+                          ? Icons.mic_off
+                          : Icons.mic),
+                      label: Text((_media?.capturing ?? false)
+                          ? 'Detener captura'
+                          : 'Iniciar captura'),
                     ),
                   ],
                 ],

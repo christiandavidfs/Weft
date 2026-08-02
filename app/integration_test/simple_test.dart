@@ -8,6 +8,6 @@ void main() {
   setUpAll(() async => await RustLib.init());
   testWidgets('Can call rust engine', (WidgetTester tester) async {
     await tester.pumpWidget(const WeftApp());
-    expect(find.text('Iniciar sesión'), findsOneWidget);
+    expect(find.text('Iniciar red'), findsOneWidget);
   });
 }
