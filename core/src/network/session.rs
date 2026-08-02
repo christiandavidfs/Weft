@@ -19,6 +19,13 @@ pub const SERVICE_TYPE: &str = "_weft._tcp.local.";
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_millis(2500);
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
+/// How long the coordinator waits for the current transmitter to answer
+/// `AskCede` before forcing the handoff.
+const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
+/// After granting the token to a new transmitter, how long the coordinator
+/// waits for media packets from it before rolling the token back.
+const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Bootstrap,
@@ -90,6 +97,12 @@ struct State {
     peers: BTreeMap<String, PeerInfo>,
     peers_by_instance: HashMap<String, String>,
     pending_requests: Vec<String>,
+    /// A handoff in progress: who asked, who holds the token, and by when the
+    /// current holder must answer `AskCede`.
+    handoff: Option<Handoff>,
+    /// If we (a member holding the token) are asked to cede and auto-cede is
+    /// off, we remember the requester until the app decides.
+    cede_asked_by: Option<String>,
     addr: IpAddr,
     port: u16,
     media_port: u16,
@@ -97,6 +110,13 @@ struct State {
     connecting_to: Option<SocketAddr>,
     conns: HashMap<String, tokio::sync::mpsc::UnboundedSender<WsMessage>>,
     coordinator_tx: Option<tokio::sync::mpsc::UnboundedSender<WsMessage>>,
+}
+
+/// In-flight handoff negotiation. `requester` wants the token currently held
+/// by `holder`; we asked the holder to cede via `AskCede`.
+struct Handoff {
+    requester: String,
+    holder: String,
 }
 
 struct Advert {
@@ -131,6 +151,8 @@ impl SessionInner {
                 peers: BTreeMap::new(),
                 peers_by_instance: HashMap::new(),
                 pending_requests: Vec::new(),
+                handoff: None,
+                cede_asked_by: None,
                 addr: "127.0.0.1".parse().unwrap(),
                 port: 0,
                 media_port: 0,
@@ -197,6 +219,7 @@ impl SessionInner {
             s.media_port = media_port;
         }
         *self.media.lock().unwrap() = Some(engine.clone());
+        engine.set_source_id(self.source_id());
         let inner = self.clone();
         engine.set_event_callback(Box::new(move |kind, msg| {
             match kind {
@@ -553,6 +576,12 @@ impl NetworkEngine {
         self.inner.deny_transmit(device_id);
     }
 
+    /// Answer a `AskCede`: whether we (the current transmitter) give up the
+    /// token so another device can take over with a crossfade.
+    pub fn respond_to_cede(&self, cede: bool) {
+        self.inner.respond_to_cede(cede);
+    }
+
     pub fn transmit_file(&self, path: &str) -> Result<(), String> {
         self.inner.transmit_file(path)
     }
@@ -576,6 +605,8 @@ impl SessionInner {
             s.transmitter_id = None;
             s.members.clear();
             s.pending_requests.clear();
+            s.handoff = None;
+            s.cede_asked_by = None;
             s.conns.clear();
         }
         if let Some(advert) = self.mdns.lock().unwrap().as_ref() {
@@ -613,16 +644,21 @@ impl SessionInner {
         hasher.finish()
     }
 
-    /// Build the media member list (all session members except ourselves) and
-    /// push it into the media engine.
+    /// Stable media-plane identity for this device, stamped on every packet we
+    /// transmit so receivers can detect a source switch.
+    fn source_id(&self) -> u64 {
+        source_id_of(&self.lock().device_id)
+    }
+
+    /// Build the media member list (all session members including ourselves, so
+    /// the coordinator can observe incoming streams for rollback) and push it
+    /// into the media engine. Transmitters skip their own address when sending.
     fn refresh_media_members(&self) {
         if let Some(engine) = self.media() {
             let members: Vec<MemberMedia> = {
                 let s = self.lock();
-                let my_id = s.device_id.clone();
                 s.members
                     .values()
-                    .filter(|m| m.device_id != my_id)
                     .filter_map(|m| {
                         let ip: IpAddr = m.addr.parse().ok()?;
                         Some(MemberMedia {
@@ -737,6 +773,147 @@ impl SessionInner {
         self.refresh_transmitter_media();
     }
 
+    /// Start a handoff: ask the current transmitter (if any) to cede so the
+    /// token can move to `requester` with a smooth media crossfade. No-op if the
+    /// token is free or the holder is the coordinator itself (that decision is
+    /// the coordinator's own). Returns true if an `AskCede` was sent.
+    fn begin_handoff_if_busy(self: &Arc<Self>, requester: &str) -> bool {
+        let start = {
+            let mut s = self.lock();
+            if s.transmitter_id.is_none() || s.handoff.is_some() {
+                false
+            } else if s.transmitter_id.as_deref() == Some(s.device_id.as_str()) {
+                false
+            } else {
+                let holder = s.transmitter_id.clone().unwrap();
+                s.handoff = Some(Handoff {
+                    requester: requester.to_string(),
+                    holder: holder.clone(),
+                });
+                true
+            }
+        };
+        if start {
+            let holder = {
+                let s = self.lock();
+                s.handoff.as_ref().map(|h| h.holder.clone()).unwrap_or_default()
+            };
+            self.send_to(&holder, &S2C::AskCede { requester_id: requester.to_string() });
+            let inner = self.clone();
+            let requester = requester.to_string();
+            self.rt.spawn(async move {
+                tokio::time::sleep(HANDOFF_TIMEOUT).await;
+                inner.on_handoff_timeout(&requester);
+            });
+        }
+        start
+    }
+
+    /// Timeout path: the current transmitter did not answer `AskCede` in time,
+    /// so the coordinator forces the handoff.
+    fn on_handoff_timeout(self: &Arc<Self>, requester: &str) {
+        let should_force = {
+            let s = self.lock();
+            s.handoff.as_ref().map(|h| h.requester == requester).unwrap_or(false)
+        };
+        if should_force {
+            self.complete_handoff(requester);
+        }
+    }
+
+    /// Revoke the current holder and grant the token to `requester`, then watch
+    /// for the new transmitter to actually stream (rollback if it doesn't).
+    fn complete_handoff(self: &Arc<Self>, requester: &str) {
+        let prev = {
+            let mut s = self.lock();
+            match s.handoff.take() {
+                Some(h) if h.requester == requester => {
+                    let prev = h.holder;
+                    s.transmitter_id = Some(requester.to_string());
+                    s.pending_requests.retain(|d| d != requester);
+                    Some(prev)
+                }
+                _ => None,
+            }
+        };
+        if let Some(prev) = prev {
+            self.broadcast(&S2C::TransmitRevoked { device_id: prev.clone() });
+            let prev_name = self
+                .lock()
+                .members
+                .get(&prev)
+                .map(|m| m.device_name.clone())
+                .unwrap_or_default();
+            self.emit("transmit_revoked", &prev, &prev_name, "cedió el token (handoff)");
+            self.broadcast(&S2C::TransmitGranted { device_id: requester.to_string() });
+            let name = self
+                .lock()
+                .members
+                .get(requester)
+                .map(|m| m.device_name.clone())
+                .unwrap_or_default();
+            self.emit("transmit_granted", requester, &name, "tiene el token (handoff)");
+            self.refresh_transmitter_media();
+            self.start_rollback_watch(&prev, requester);
+        }
+    }
+
+    /// If the new transmitter produces no media within `ROLLBACK_TIMEOUT`, put
+    /// the token back on the previous holder (if still in the session).
+    fn start_rollback_watch(self: &Arc<Self>, prev: &str, new_tx: &str) {
+        let inner = self.clone();
+        let prev = prev.to_string();
+        let new_tx = new_tx.to_string();
+        self.rt.spawn(async move {
+            tokio::time::sleep(ROLLBACK_TIMEOUT).await;
+            inner.rollback_if_silent(&prev, &new_tx);
+        });
+    }
+
+    fn rollback_if_silent(&self, prev: &str, new_tx: &str) {
+        let streaming = self
+            .media()
+            .map(|m| m.last_source_id() == source_id_of(new_tx))
+            .unwrap_or(false);
+        let still_new = {
+            let s = self.lock();
+            s.transmitter_id.as_deref() == Some(new_tx)
+        };
+        if !streaming && still_new {
+            let prev_alive = {
+                let s = self.lock();
+                s.members.contains_key(prev) || s.device_id == prev
+            };
+            if prev_alive {
+                {
+                    let mut s = self.lock();
+                    s.transmitter_id = Some(prev.to_string());
+                }
+                self.broadcast(&S2C::TransmitRevoked { device_id: new_tx.to_string() });
+                self.emit("transmit_revoked", new_tx, "", "no emitió; token devuelto");
+                self.broadcast(&S2C::TransmitGranted { device_id: prev.to_string() });
+                let name = self
+                    .lock()
+                    .members
+                    .get(prev)
+                    .map(|m| m.device_name.clone())
+                    .unwrap_or_default();
+                self.emit("transmit_granted", prev, &name, "token restaurado (rollback)");
+                self.refresh_transmitter_media();
+            }
+        }
+    }
+
+    /// Send an S2C message to a single connected member (not broadcast).
+    fn send_to(&self, device_id: &str, msg: &S2C) {
+        let tx = self.lock().conns.get(device_id).cloned();
+        if let Some(tx) = tx {
+            if let Ok(payload) = serde_json::to_string(msg) {
+                let _ = tx.send(WsMessage::Text(payload));
+            }
+        }
+    }
+
     // ---- transmit token ----
 
     pub fn request_transmit(&self) {
@@ -763,6 +940,29 @@ impl SessionInner {
             self.refresh_transmitter_media();
         } else {
             self.send_to_coordinator(&C2S::RequestTransmit { device_id: id });
+        }
+    }
+
+    pub fn respond_to_cede(&self, cede: bool) {
+        let requester = {
+            let mut s = self.lock();
+            s.cede_asked_by.take()
+        };
+        if let Some(requester) = requester {
+            if cede {
+                // Give up the token: release to the coordinator, which will
+                // hand it to the requester with a crossfade.
+                self.send_to_coordinator(&C2S::CedeReply { device_id: self.my_id(), cede: true });
+                let name = self
+                    .lock()
+                    .members
+                    .get(&requester)
+                    .map(|m| m.device_name.clone())
+                    .unwrap_or_default();
+                self.emit("transmit_revoked", &self.my_id(), &name, "cedí el token");
+            } else {
+                self.send_to_coordinator(&C2S::CedeReply { device_id: self.my_id(), cede: false });
+            }
         }
     }
 
@@ -858,7 +1058,7 @@ impl SessionInner {
 
     // ---- coordinator incoming messages ----
 
-    fn on_c2s(&self, msg: C2S) {
+    fn on_c2s(self: &Arc<Self>, msg: C2S) {
         match msg {
             C2S::Hello { .. } => {
                 let (addr, port) = {
@@ -901,6 +1101,46 @@ impl SessionInner {
                         .unwrap_or_default();
                     self.broadcast(&S2C::TransmitRequested { device_id: device_id.clone(), device_name: name.clone() });
                     self.emit("transmit_requested", &device_id, &name, "pide el token");
+                    self.begin_handoff_if_busy(&device_id);
+                }
+                self.refresh_transmitter_media();
+            }
+            C2S::CedeReply { device_id, cede } => {
+                let current = {
+                    let s = self.lock();
+                    let is_holder = s
+                        .handoff
+                        .as_ref()
+                        .map(|h| h.holder == device_id)
+                        .unwrap_or(false);
+                    is_holder
+                };
+                if !current {
+                    return;
+                }
+                if cede {
+                    let requester = {
+                        let s = self.lock();
+                        s.handoff.as_ref().map(|h| h.requester.clone()).unwrap_or_default()
+                    };
+                    if !requester.is_empty() {
+                        self.complete_handoff(&requester);
+                    }
+                } else {
+                    // Holder refuses to cede: requester stays queued.
+                    let requester = {
+                        let mut s = self.lock();
+                        s.handoff.take().map(|h| h.requester).unwrap_or_default()
+                    };
+                    if !requester.is_empty() {
+                        let name = self
+                            .lock()
+                            .members
+                            .get(&requester)
+                            .map(|m| m.device_name.clone())
+                            .unwrap_or_default();
+                        self.emit("transmit_requested", &requester, &name, "el transmisor actual no cedió");
+                    }
                 }
                 self.refresh_transmitter_media();
             }
@@ -1027,6 +1267,21 @@ impl SessionInner {
                 self.refresh_transmitter_media();
                 self.emit("transmit_denied", &device_id, "", "solicitud rechazada");
             }
+            S2C::AskCede { requester_id } => {
+                // We currently hold the token. Remember who asked and let the
+                // app decide; the coordinator enforces a ~2s timeout.
+                {
+                    let mut s = self.lock();
+                    s.cede_asked_by = Some(requester_id.clone());
+                }
+                let name = self
+                    .lock()
+                    .members
+                    .get(&requester_id)
+                    .map(|m| m.device_name.clone())
+                    .unwrap_or_default();
+                self.emit("cede_asked", &requester_id, &name, "quiere el token de transmisión");
+            }
             S2C::ClockReply { query_sent_us, query_received_us, reply_sent_us } => {
                 if let Some(engine) = self.media() {
                     let t3 = engine.now_local_us();
@@ -1044,6 +1299,14 @@ impl SessionInner {
 
 fn detect_local_ip() -> Option<IpAddr> {
     local_ip_address::local_ip().ok().map(IpAddr::from)
+}
+
+/// Stable media-plane identity for a device id, used to match transmitted
+/// packets against the transmitter that holds the token.
+fn source_id_of(device_id: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    device_id.hash(&mut hasher);
+    hasher.finish()
 }
 
 // ---- async tasks ----

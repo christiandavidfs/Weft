@@ -66,6 +66,7 @@ mod tests {
         let b = MediaSocket::bind().unwrap();
         let pkt = AudioPacket::new(
             3,
+            99,
             5,
             123,
             vec![7i16; FRAME_SAMPLES * CHANNELS as usize],

@@ -250,6 +250,15 @@ pub fn network_deny_transmit(device_id: String) {
     }
 }
 
+/// Answer the coordinator's `AskCede`: whether we (the current transmitter)
+/// give up the token so another device can take over with a crossfade.
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_respond_to_cede(cede: bool) {
+    if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
+        engine.respond_to_cede(cede);
+    }
+}
+
 #[flutter_rust_bridge::frb(sync)]
 pub fn network_input_devices() -> Vec<String> {
     weft_core::media::input_devices()

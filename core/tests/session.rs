@@ -229,3 +229,184 @@ fn receiver_plays_stream_through_cpal() {
     b.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Three devices: the token passes from Beta (file transmitter) to Gamma
+/// (member) via a coordinator-negotiated handoff (AskCede/CedeReply), and the
+/// coordinator verifies the new transmitter actually streams (no rollback).
+#[test]
+fn coordinator_handoffs_token_to_requesting_member() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_handoff_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 5);
+
+    let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
+
+    let sa = || a.status();
+
+    // Let Alpha become coordinator first (no peers yet), so Beta and Gamma join
+    // a stable session instead of racing the mDNS bootstrap.
+    let a_is_coord = wait_until(Duration::from_secs(10), || {
+        sa().role.as_str() == "coordinator"
+    });
+    assert!(a_is_coord, "Alpha no quedó de coordinadora: {:?}", sa());
+
+    let b = NetworkEngine::start_with("Beta".to_string(), false).unwrap();
+    let c = NetworkEngine::start_with("Gamma".to_string(), false).unwrap();
+
+    let sb = || b.status();
+    let sc = || c.status();
+
+    let formed = wait_until(Duration::from_secs(20), || {
+        let roles = [sa().role.as_str().to_string(), sb().role.as_str().to_string(), sc().role.as_str().to_string()];
+        let coord_count = roles.iter().filter(|r| r.as_str() == "coordinator").count();
+        let member_count = roles.iter().filter(|r| r.as_str() == "member").count();
+        let coordinator_sees_all = sa().members.len() == 3;
+        coord_count == 1 && member_count == 2 && coordinator_sees_all
+    });
+    assert!(
+        formed,
+        "no se formó la sesión de 3: A={:?} B={:?} C={:?}",
+        sa(),
+        sb(),
+        sc()
+    );
+
+    // Beta: the future transmitter, auto-cedes when the coordinator asks.
+    let cede_req = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cede_flag = cede_req.clone();
+    b.set_event_callback(Box::new(move |ev| {
+        if ev.kind == "cede_asked" {
+            cede_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
+
+    // Beta gets the token (token is free) and starts transmitting.
+    b.request_transmit();
+    let beta_has_token = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == b.status().device_id
+            && sb().transmitter_id == b.status().device_id
+            && sc().transmitter_id == b.status().device_id
+    });
+    assert!(beta_has_token, "Beta no obtuvo el token: {:?}", sa());
+    b.transmit_file(wav.to_str().unwrap()).expect("transmit_file falló");
+
+    // The receiver (Alpha, the coordinator) sees Beta's stream arrive.
+    let receiving = wait_until(Duration::from_secs(15), || {
+        a.media_stats()
+            .map(|m| m.received_packets > 0 && m.last_source_id != 0)
+            .unwrap_or(false)
+    });
+    assert!(receiving, "el coordinador no recibió el stream de Beta: {:?}", a.media_stats());
+
+    // Gamma requests the token while Beta holds it -> handoff negotiation.
+    c.request_transmit();
+    let asked = wait_until(Duration::from_secs(5), || {
+        cede_req.load(std::sync::atomic::Ordering::Relaxed)
+    });
+    assert!(asked, "el coordinador no le preguntó a Beta por el token: {:?}", sa());
+
+    // Beta cedes -> coordinator revokes Beta and grants Gamma.
+    b.respond_to_cede(true);
+    let gamma_has_token = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == c.status().device_id
+            && sb().transmitter_id == c.status().device_id
+            && sc().transmitter_id == c.status().device_id
+    });
+    assert!(gamma_has_token, "Gamma no recibió el token: A={:?} B={:?} C={:?}", sa(), sb(), sc());
+
+    // Gamma actually streams -> coordinator sees a *new* source and keeps the
+    // token on Gamma (no rollback).
+    let before_gamma = a.media_stats().map(|m| m.last_source_id).unwrap_or(0);
+    c.transmit_file(wav.to_str().unwrap()).expect("transmit_file falló");
+    let gamma_streams = wait_until(Duration::from_secs(10), || {
+        a.media_stats()
+            .map(|m| m.last_source_id != 0 && m.last_source_id != before_gamma)
+            .unwrap_or(false)
+    });
+    assert!(gamma_streams, "el coordinador no vio el stream de Gamma: {:?}", a.media_stats());
+
+    // After the rollback window, the token must still be on Gamma.
+    std::thread::sleep(Duration::from_millis(3500));
+    let still_gamma = {
+        let s = sa();
+        s.transmitter_id == c.status().device_id
+    };
+    assert!(still_gamma, "el token se revirtió por error: {:?}", sa());
+
+    a.stop();
+    b.stop();
+    c.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// If a handed-off transmitter never starts streaming, the coordinator rolls
+/// the token back to the previous holder.
+#[test]
+fn coordinator_rolls_back_token_when_new_transmitter_is_silent() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_rollback_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 5);
+
+    let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
+    let sa = || a.status();
+    let a_is_coord = wait_until(Duration::from_secs(10), || {
+        sa().role.as_str() == "coordinator"
+    });
+    assert!(a_is_coord, "Alpha no quedó de coordinadora: {:?}", sa());
+
+    let b = NetworkEngine::start_with("Beta".to_string(), false).unwrap();
+    let c = NetworkEngine::start_with("Gamma".to_string(), false).unwrap();
+    let sb = || b.status();
+    let sc = || c.status();
+
+    let formed = wait_until(Duration::from_secs(20), || {
+        let roles = [sa().role.as_str().to_string(), sb().role.as_str().to_string(), sc().role.as_str().to_string()];
+        let coord_count = roles.iter().filter(|r| r.as_str() == "coordinator").count();
+        let member_count = roles.iter().filter(|r| r.as_str() == "member").count();
+        let coordinator_sees_all = sa().members.len() == 3;
+        coord_count == 1 && member_count == 2 && coordinator_sees_all
+    });
+    assert!(formed, "no se formó la sesión de 3: {:?} {:?} {:?}", sa(), sb(), sc());
+
+    let cede_req = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cede_flag = cede_req.clone();
+    b.set_event_callback(Box::new(move |ev| {
+        if ev.kind == "cede_asked" {
+            cede_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
+
+    // Beta holds the token and streams.
+    b.request_transmit();
+    let beta_has_token = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == b.status().device_id
+    });
+    assert!(beta_has_token, "Beta no obtuvo el token: {:?}", sa());
+    b.transmit_file(wav.to_str().unwrap()).expect("transmit_file falló");
+
+    // Gamma requests and Beta cedes.
+    c.request_transmit();
+    let asked = wait_until(Duration::from_secs(5), || {
+        cede_req.load(std::sync::atomic::Ordering::Relaxed)
+    });
+    assert!(asked, "el coordinador no le preguntó a Beta: {:?}", sa());
+    b.respond_to_cede(true);
+    let gamma_has_token = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == c.status().device_id
+    });
+    assert!(gamma_has_token, "Gamma no recibió el token: {:?}", sa());
+
+    // Gamma never calls transmit_file -> after the rollback window the token
+    // returns to Beta.
+    let rolled_back = wait_until(Duration::from_secs(8), || {
+        sa().transmitter_id == b.status().device_id
+    });
+    assert!(rolled_back, "el token no volvió a Beta: {:?}", sa());
+
+    a.stop();
+    b.stop();
+    c.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

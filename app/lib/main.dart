@@ -56,6 +56,9 @@ class _HomePageState extends State<HomePage> {
         _status = networkStatus();
         _media = networkMediaStats();
       });
+      if (ev.kind == 'cede_asked') {
+        _askCede(ev);
+      }
     });
     _poll = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
@@ -433,6 +436,35 @@ class _HomePageState extends State<HomePage> {
   void _releaseTransmit() {
     networkReleaseTransmit();
     setState(() => _status = networkStatus());
+  }
+
+  /// The coordinator asked us (the current transmitter) to hand the token to
+  /// another device. Ask the user, then answer.
+  Future<void> _askCede(NetworkEventView ev) async {
+    if (!mounted) return;
+    final cede = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Ceder la transmisión?'),
+        content: Text(
+          '${ev.deviceName.isNotEmpty ? ev.deviceName : ev.deviceId} quiere '
+          'transmitir. ¿Cedés el token?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí, ceder'),
+          ),
+        ],
+      ),
+    );
+    if (cede != null) {
+      networkRespondToCede(cede: cede);
+    }
   }
 
   String _shortId(String id) => id.isEmpty ? '—' : '${id.substring(0, 8)}…';

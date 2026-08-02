@@ -114,6 +114,26 @@ impl JitterBuffer {
         self.packets.iter().next().map(|(_, p)| p)
     }
 
+    /// Drop everything and rebase sequence tracking. Called when the
+    /// transmitter switches during a handoff: the new source restarts its
+    /// sequence at 0, so any `next_seq` from the previous source would make
+    /// every new packet look stale.
+    pub fn reset(&mut self) {
+        self.packets.clear();
+        self.next_seq = None;
+        self.stats = JitterStats::default();
+    }
+
+    /// Remove and return all buffered packets in sequence order, ignoring their
+    /// playback deadlines. Used to harvest the previous source's tail for a
+    /// crossfade during a handoff.
+    pub fn drain_all(&mut self) -> Vec<AudioPacket> {
+        let out: Vec<AudioPacket> = self.packets.iter().map(|(_, p)| p.clone()).collect();
+        self.packets.clear();
+        self.next_seq = None;
+        out
+    }
+
     pub fn stats(&self) -> JitterStats {
         JitterStats {
             buffered_us: self.buffered_us() as u64,
@@ -132,7 +152,7 @@ mod tests {
     use crate::media::{CHANNELS, FRAME_SAMPLES, SAMPLE_RATE};
 
     fn pkt(seq: u32, pts_us: u64) -> AudioPacket {
-        AudioPacket::new(1, seq, pts_us, vec![0i16; FRAME_SAMPLES * CHANNELS as usize], SAMPLE_RATE, CHANNELS)
+        AudioPacket::new(1, 0, seq, pts_us, vec![0i16; FRAME_SAMPLES * CHANNELS as usize], SAMPLE_RATE, CHANNELS)
     }
 
     #[test]

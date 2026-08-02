@@ -46,6 +46,11 @@ void networkApproveTransmit({required String deviceId}) => RustLib.instance.api
 void networkDenyTransmit({required String deviceId}) =>
     RustLib.instance.api.crateApiNetworkNetworkDenyTransmit(deviceId: deviceId);
 
+/// Answer the coordinator's `AskCede`: whether we (the current transmitter)
+/// give up the token so another device can take over with a crossfade.
+void networkRespondToCede({required bool cede}) =>
+    RustLib.instance.api.crateApiNetworkNetworkRespondToCede(cede: cede);
+
 List<String> networkInputDevices() =>
     RustLib.instance.api.crateApiNetworkNetworkInputDevices();
 

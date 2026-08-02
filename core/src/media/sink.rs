@@ -15,6 +15,25 @@ use crate::media::{CHANNELS, SAMPLE_RATE};
 /// correction frame is stuffed (duplicated) or dropped. ~1ms at 48kHz.
 const DRIFT_THRESHOLD_FRAMES: u64 = 48;
 
+/// Length of the crossfade during a handoff, in output frames. ~100ms at 48kHz.
+const CROSSFADE_FRAMES: usize = 4800;
+
+/// A crossfade in progress: mixes the previous source's tail (fading out) with
+/// the new source's head (fading in) over `total` frames.
+struct Crossfade {
+    old: VecDeque<[i16; 2]>,
+    last_old: [i16; 2],
+    remaining: usize,
+    total: usize,
+}
+
+impl Crossfade {
+    fn gain(&self) -> f32 {
+        let elapsed = self.total.saturating_sub(self.remaining) as f32;
+        (elapsed / self.total.max(1) as f32).clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriftAction {
     None,
@@ -96,6 +115,8 @@ pub struct PlaybackState {
     stuffed: u64,
     dropped: u64,
     drift: DriftController,
+    source_id: Option<u64>,
+    crossfade: Option<Crossfade>,
 }
 
 impl PlaybackState {
@@ -113,6 +134,8 @@ impl PlaybackState {
             stuffed: 0,
             dropped: 0,
             drift: DriftController::new(DRIFT_THRESHOLD_FRAMES),
+            source_id: None,
+            crossfade: None,
         }
     }
 
@@ -121,8 +144,57 @@ impl PlaybackState {
     }
 
     pub fn push(&mut self, pkt: AudioPacket) -> bool {
+        if let Some(cur) = self.source_id {
+            if cur != pkt.transmitter_id {
+                self.begin_crossfade();
+            }
+        }
+        self.source_id = Some(pkt.transmitter_id);
         let now = self.now_session_us();
         self.jitter.push(pkt, now)
+    }
+
+    /// Harvest whatever the previous source still has buffered (current packet
+    /// remainder, pending queue, jitter) into a fade-out tail, then reset the
+    /// buffers so the new source's sequence space starts clean.
+    fn begin_crossfade(&mut self) {
+        let mut old: VecDeque<[i16; 2]> = VecDeque::new();
+        let append = |frames: &mut VecDeque<[i16; 2]>, samples: &[i16]| {
+            for f in samples.chunks_exact(CHANNELS as usize) {
+                frames.push_back([f[0], f[1]]);
+                if frames.len() >= CROSSFADE_FRAMES {
+                    break;
+                }
+            }
+        };
+        if let Some(cur) = self.cur.take() {
+            let start = self.cur_offset * CHANNELS as usize;
+            if start < cur.samples.len() {
+                append(&mut old, &cur.samples[start..]);
+            }
+        }
+        for p in self.pending.drain(..) {
+            append(&mut old, &p.samples);
+            if old.len() >= CROSSFADE_FRAMES {
+                break;
+            }
+        }
+        for p in self.jitter.drain_all() {
+            append(&mut old, &p.samples);
+            if old.len() >= CROSSFADE_FRAMES {
+                break;
+            }
+        }
+        self.cur = None;
+        self.cur_offset = 0;
+        self.pending.clear();
+        let total = old.len();
+        self.crossfade = Some(Crossfade {
+            old,
+            last_old: self.last_frame,
+            remaining: total,
+            total,
+        });
     }
 
     /// Fill an interleaved stereo f32 output buffer. This is the realtime core
@@ -131,6 +203,30 @@ impl PlaybackState {
         let n = out.len() / 2;
         for i in 0..n {
             let now = self.now_session_us();
+
+            // Crossfade in progress: mix the old source's tail with the new
+            // source's head. Drift correction is suspended during the fade.
+            let fade_frame = self.crossfade.as_mut().map(|cf| cf.old.pop_front().unwrap_or(cf.last_old));
+            let fade_gain = self.crossfade.as_ref().map(|cf| cf.gain());
+            if let Some(old) = fade_frame {
+                let new = self.take_frame().unwrap_or([0, 0]);
+                let g = fade_gain.unwrap_or(0.0);
+                let l = old[0] as f32 * (1.0 - g) + new[0] as f32 * g;
+                let r = old[1] as f32 * (1.0 - g) + new[1] as f32 * g;
+                out[i * 2] = l / 32768.0;
+                out[i * 2 + 1] = r / 32768.0;
+                self.last_frame = [l as i16, r as i16];
+                self.played_frames += 1;
+                if let Some(cf) = &mut self.crossfade {
+                    cf.remaining -= 1;
+                    if cf.remaining == 0 {
+                        self.crossfade = None;
+                        self.drift.reset(now, self.consumed_frames);
+                    }
+                }
+                continue;
+            }
+
             match self.drift.tick(now, self.consumed_frames) {
                 DriftAction::Stuff => {
                     out[i * 2] = self.last_frame[0] as f32 / 32768.0;
@@ -329,7 +425,7 @@ mod tests {
         let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
         // One packet with 10 frames (20 samples), pts due immediately.
         let samples: Vec<i16> = (0..20).map(|i| i as i16).collect();
-        let pkt = AudioPacket::new(1, 0, 0, samples.clone(), SAMPLE_RATE, CHANNELS);
+        let pkt = AudioPacket::new(1, 0, 0, 0, samples.clone(), SAMPLE_RATE, CHANNELS);
         assert!(st.push(pkt));
 
         let mut out = vec![0.0f32; 20];
@@ -352,8 +448,8 @@ mod tests {
         let clock = shared_clock(1);
         let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
         // Two one-frame packets, arrival in reverse order, both due immediately.
-        assert!(st.push(AudioPacket::new(1, 1, 0, vec![333, 444], SAMPLE_RATE, CHANNELS)));
-        assert!(st.push(AudioPacket::new(1, 0, 0, vec![111, 222], SAMPLE_RATE, CHANNELS)));
+        assert!(st.push(AudioPacket::new(1, 0, 1, 0, vec![333, 444], SAMPLE_RATE, CHANNELS)));
+        assert!(st.push(AudioPacket::new(1, 0, 0, 0, vec![111, 222], SAMPLE_RATE, CHANNELS)));
 
         let mut out = vec![0.0f32; 4];
         st.fill_float(&mut out);
@@ -370,12 +466,35 @@ mod tests {
         // Packet scheduled in the future (pts in the future relative to now).
         let samples = vec![0i16; 20];
         let future_pts = st.now_session_us() + 100 * FRAME_US as u128;
-        assert!(st.push(AudioPacket::new(1, 0, future_pts as u64, samples, SAMPLE_RATE, CHANNELS)));
+        assert!(st.push(AudioPacket::new(1, 0, 0, future_pts as u64, samples, SAMPLE_RATE, CHANNELS)));
 
         let mut out = vec![0.0f32; 20];
         st.fill_float(&mut out);
         // Not due yet -> underrun silence.
         assert!(out.iter().all(|s| *s == 0.0));
         assert_eq!(st.stats().underruns, 1);
+    }
+
+    #[test]
+    fn source_switch_crossfades_old_tail_with_new_head() {
+        let clock = shared_clock(1);
+        let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
+        // Old source: two one-frame packets, due immediately.
+        assert!(st.push(AudioPacket::new(1, 7, 0, 0, vec![1000, 1000], SAMPLE_RATE, CHANNELS)));
+        assert!(st.push(AudioPacket::new(1, 7, 1, 0, vec![2000, 2000], SAMPLE_RATE, CHANNELS)));
+        // New source (transmitter 42) restarts its sequence at 0.
+        assert!(st.push(AudioPacket::new(1, 42, 0, 0, vec![100, 100], SAMPLE_RATE, CHANNELS)));
+        assert!(st.push(AudioPacket::new(1, 42, 1, 0, vec![200, 200], SAMPLE_RATE, CHANNELS)));
+
+        let mut out = vec![0.0f32; 4];
+        st.fill_float(&mut out);
+        // Frame 0: pure old tail (t=0). Frame 1: old tail faded to 0.5,
+        // new head blended in at 0.5.
+        let f0 = 1000.0 / 32768.0;
+        assert!((out[0] - f0).abs() < 1e-4, "first frame {:?}", out[0]);
+        let expected = (2000.0 * 0.5 + 200.0 * 0.5) / 32768.0;
+        assert!((out[2] - expected).abs() < 1e-4, "second frame {:?}", out[2]);
+        assert_eq!(st.stats().underruns, 0);
+        assert!(st.crossfade.is_none(), "crossfade should finish");
     }
 }

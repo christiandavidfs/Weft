@@ -14,6 +14,12 @@ pub enum C2S {
     ReleaseTransmit {
         device_id: String,
     },
+    /// Response to the coordinator's `AskCede`: whether this device gives up
+    /// the transmit token to a requester.
+    CedeReply {
+        device_id: String,
+        cede: bool,
+    },
     ClockQuery {
         query_sent_us: u64,
     },
@@ -48,6 +54,10 @@ pub enum S2C {
     },
     TransmitDenied {
         device_id: String,
+    },
+    /// Coordinator asks the current transmitter to cede so a handoff can start.
+    AskCede {
+        requester_id: String,
     },
     ClockReply {
         query_sent_us: u64,

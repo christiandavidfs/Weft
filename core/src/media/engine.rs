@@ -36,6 +36,7 @@ pub struct MediaStats {
     pub clock_offset_us: i64,
     pub clock_rtt_us: u128,
     pub last_error: String,
+    pub last_source_id: u64,
     pub playback: Option<PlaybackStats>,
 }
 
@@ -57,9 +58,11 @@ pub struct MediaEngine {
     events: Arc<Mutex<Option<Box<dyn Fn(&str, String) + Send + Sync>>>>,
     received: Arc<AtomicU64>,
     transmitted: Arc<AtomicU64>,
+    last_source_id: Arc<AtomicU64>,
     transmitting: Arc<AtomicBool>,
     capturing: Arc<AtomicBool>,
     capture: Mutex<Option<CaptureState>>,
+    source_id: Arc<AtomicU64>,
     last_error: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
     #[allow(dead_code)]
@@ -101,8 +104,10 @@ impl MediaEngine {
         let rx_stop = stop.clone();
         let received = Arc::new(AtomicU64::new(0));
         let rx_received = received.clone();
+        let last_source_id = Arc::new(AtomicU64::new(0));
+        let rx_last_source = last_source_id.clone();
         let rx_thread = thread::spawn(move || {
-            run_receiver(rx_socket, rx_clock, rx_state, rx_tx, rx_received, rx_stop);
+            run_receiver(rx_socket, rx_clock, rx_state, rx_tx, rx_received, rx_last_source, rx_stop);
         });
 
         Ok(Self {
@@ -114,13 +119,21 @@ impl MediaEngine {
             events: Arc::new(Mutex::new(None)),
             received,
             transmitted: Arc::new(AtomicU64::new(0)),
+            last_source_id,
             transmitting: Arc::new(AtomicBool::new(false)),
             capturing: Arc::new(AtomicBool::new(false)),
             capture: Mutex::new(None),
+            source_id: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(Mutex::new(String::new())),
             stop,
             rx_thread,
         })
+    }
+
+    /// Set this device's identity, stamped on every packet we transmit. Used by
+    /// receivers to detect a source switch during handoffs.
+    pub fn set_source_id(&self, id: u64) {
+        self.source_id.store(id, Ordering::Relaxed);
     }
 
     pub fn set_event_callback(&self, cb: Box<dyn Fn(&str, String) + Send + Sync>) {
@@ -222,6 +235,7 @@ impl MediaEngine {
         let stop = Arc::new(AtomicBool::new(false));
         let t_stop = stop.clone();
         let t_events = self.events.clone();
+        let source_id = self.source_id.load(Ordering::Relaxed);
 
         let thread = thread::spawn(move || {
             let result = (|| {
@@ -233,6 +247,7 @@ impl MediaEngine {
                     state: t_state,
                     socket: t_socket,
                     session_tag,
+                    source_id,
                     base_pts,
                     base_local,
                 };
@@ -324,6 +339,7 @@ impl MediaEngine {
         let self_events = self.events.clone();
         let transmitting = self.transmitting.clone();
         let self_transmitting = self.transmitting.clone();
+        let source_id = self.source_id.load(Ordering::Relaxed);
 
         thread::spawn(move || {
             let result = run_transmitter(
@@ -335,6 +351,7 @@ impl MediaEngine {
                 &errors,
                 &stop,
                 &self_transmitting,
+                source_id,
             );
             match result {
                 Ok(()) => {
@@ -375,8 +392,16 @@ impl MediaEngine {
             clock_offset_us,
             clock_rtt_us,
             last_error: self.last_error.lock().unwrap().clone(),
+            last_source_id: self.last_source_id.load(Ordering::Relaxed),
             playback,
         }
+    }
+
+    /// The transmitter_id of the most recent packet received. Used by the
+    /// coordinator to detect whether a handed-off transmitter is actually
+    /// streaming (rollback).
+    pub fn last_source_id(&self) -> u64 {
+        self.last_source_id.load(Ordering::Relaxed)
     }
 }
 
@@ -386,6 +411,7 @@ fn run_receiver(
     state: Arc<Mutex<MediaState>>,
     packet_tx: flume::Sender<AudioPacket>,
     received: Arc<AtomicU64>,
+    last_source_id: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
@@ -400,10 +426,12 @@ fn run_receiver(
             continue;
         }
         received.fetch_add(1, Ordering::Relaxed);
+        last_source_id.store(pkt.transmitter_id, Ordering::Relaxed);
         let _ = packet_tx.try_send(pkt);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_transmitter(
     path: &str,
     clock: Arc<Mutex<MediaClock>>,
@@ -413,6 +441,7 @@ fn run_transmitter(
     errors: &Mutex<String>,
     stop: &AtomicBool,
     transmitting: &AtomicBool,
+    source_id: u64,
 ) -> Result<(), String> {
     let pcm = decode_file_to_pcm(Path::new(path))?;
     let (session_tag, base_pts, base_local) = {
@@ -426,14 +455,18 @@ fn run_transmitter(
     if session_tag == 0 {
         return Err("no hay sesión activa".to_string());
     }
-    let mut src = PacketizedSource::new(pcm, session_tag, base_pts, 0)?;
+    let mut src = PacketizedSource::new(pcm, session_tag, source_id, base_pts, 0)?;
     let mut index = 0u64;
+    let own_addr = socket.local_addr();
     while let Some(pkt) = src.next_packet() {
         if stop.load(Ordering::Relaxed) || !transmitting.load(Ordering::Relaxed) {
             break;
         }
         let targets: Vec<MemberMedia> = state.lock().unwrap().members.clone();
         for m in &targets {
+            if m.media_addr == own_addr {
+                continue;
+            }
             let _ = socket.send_packet(&pkt, m.media_addr);
         }
         transmitted.fetch_add(1, Ordering::Relaxed);
@@ -459,6 +492,7 @@ struct CaptureContext {
     state: Arc<Mutex<MediaState>>,
     socket: MediaSocket,
     session_tag: u64,
+    source_id: u64,
     base_pts: u64,
     base_local: u128,
 }
@@ -473,7 +507,7 @@ fn run_capture_transmitter(
     transmitted: &AtomicU64,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    let CaptureContext { clock, state, socket, session_tag, base_pts, base_local } = ctx;
+    let CaptureContext { clock, state, socket, session_tag, source_id, base_pts, base_local } = ctx;
     let mut resampler = StreamResampler::new(rate, SAMPLE_RATE);
     let mut index = 0u64;
     loop {
@@ -514,14 +548,19 @@ fn run_capture_transmitter(
 
         let pkt = AudioPacket::new(
             session_tag,
+            source_id,
             index as u32,
             base_pts + index * FRAME_US,
             samples,
             SAMPLE_RATE,
             CHANNELS,
         );
+        let own_addr = socket.local_addr();
         let targets: Vec<MemberMedia> = state.lock().unwrap().members.clone();
         for m in &targets {
+            if m.media_addr == own_addr {
+                continue;
+            }
             let _ = socket.send_packet(&pkt, m.media_addr);
         }
         transmitted.fetch_add(1, Ordering::Relaxed);

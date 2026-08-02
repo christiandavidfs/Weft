@@ -5,6 +5,9 @@ use crate::media::{CHANNELS, SAMPLE_RATE};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioPacket {
     pub session_id: u64,
+    /// Identifies the transmitting device so receivers can detect a source
+    /// switch during a handoff and rebase their jitter/playback.
+    pub transmitter_id: u64,
     pub seq: u32,
     pub pts_us: u64,
     pub sample_rate: u32,
@@ -15,6 +18,7 @@ pub struct AudioPacket {
 impl AudioPacket {
     pub fn new(
         session_id: u64,
+        transmitter_id: u64,
         seq: u32,
         pts_us: u64,
         samples: Vec<i16>,
@@ -23,6 +27,7 @@ impl AudioPacket {
     ) -> Self {
         Self {
             session_id,
+            transmitter_id,
             seq,
             pts_us,
             sample_rate,
@@ -69,7 +74,7 @@ mod tests {
 
     #[test]
     fn frame_helpers() {
-        let pkt = AudioPacket::new(1, 0, 0, vec![0i16; FRAME_SAMPLES * CHANNELS as usize], SAMPLE_RATE, CHANNELS);
+        let pkt = AudioPacket::new(1, 0, 0, 0, vec![0i16; FRAME_SAMPLES * CHANNELS as usize], SAMPLE_RATE, CHANNELS);
         assert_eq!(pkt.frames(), 960);
         assert_eq!(pkt.duration_us(), 20_000);
         assert!(pkt.is_standard());
@@ -78,7 +83,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         let samples: Vec<i16> = (0..1920).map(|i| (i as i16).wrapping_mul(3)).collect();
-        let pkt = AudioPacket::new(42, 7, 123_456, samples.clone(), SAMPLE_RATE, CHANNELS);
+        let pkt = AudioPacket::new(42, 7, 7, 123_456, samples.clone(), SAMPLE_RATE, CHANNELS);
         let bytes = encode_packet(&pkt).unwrap();
         let back = decode_packet(&bytes).unwrap();
         assert_eq!(back, pkt);

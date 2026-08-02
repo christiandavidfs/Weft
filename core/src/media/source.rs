@@ -165,6 +165,7 @@ fn quantize(v: &[f32]) -> Vec<i16> {
 pub struct PacketizedSource {
     samples: Vec<i16>,
     session_id: u64,
+    transmitter_id: u64,
     base_pts_us: u64,
     start_seq: u32,
     seq: u32,
@@ -172,12 +173,19 @@ pub struct PacketizedSource {
 }
 
 impl PacketizedSource {
-    pub fn new(pcm: PcmFrames, session_id: u64, base_pts_us: u64, start_seq: u32) -> Result<Self, String> {
+    pub fn new(
+        pcm: PcmFrames,
+        session_id: u64,
+        transmitter_id: u64,
+        base_pts_us: u64,
+        start_seq: u32,
+    ) -> Result<Self, String> {
         let stereo = to_stereo(&pcm);
         let samples = resample_to_48k(&stereo, pcm.sample_rate)?;
         Ok(Self {
             samples,
             session_id,
+            transmitter_id,
             base_pts_us,
             start_seq,
             seq: start_seq,
@@ -212,7 +220,15 @@ impl PacketizedSource {
         let pts = self.base_pts_us + (seq - self.start_seq) as u64 * FRAME_US;
         self.seq = seq.wrapping_add(1);
         self.pos = end;
-        Some(AudioPacket::new(self.session_id, seq, pts, chunk, SAMPLE_RATE, CHANNELS))
+        Some(AudioPacket::new(
+            self.session_id,
+            self.transmitter_id,
+            seq,
+            pts,
+            chunk,
+            SAMPLE_RATE,
+            CHANNELS,
+        ))
     }
 }
 
@@ -258,7 +274,7 @@ mod tests {
         assert_eq!(pcm.sample_rate, rate);
         assert_eq!(pcm.samples.len(), samples.len());
 
-        let mut src = PacketizedSource::new(pcm, 7, 1_000_000, 10).unwrap();
+        let mut src = PacketizedSource::new(pcm, 7, 42, 1_000_000, 10).unwrap();
         assert_eq!(src.total_duration_us(), 3_000_000);
         let mut prev_pts = 1_000_000u64;
         let mut seq = 10u32;
@@ -285,7 +301,7 @@ mod tests {
         write_wav(&path, rate, 1, &samples);
 
         let pcm = decode_file_to_pcm(&path).unwrap();
-        let mut src = PacketizedSource::new(pcm, 1, 0, 0).unwrap();
+        let mut src = PacketizedSource::new(pcm, 1, 42, 0, 0).unwrap();
         let mut frames = 0usize;
         while let Some(pkt) = src.next_packet() {
             assert!(pkt.is_standard());
