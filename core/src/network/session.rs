@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{accept_async, connect_async};
 use uuid::Uuid;
 
-use crate::media::{MediaEngine, MediaStats, MemberMedia};
+use crate::media::{MediaConfig, MediaEngine, MediaStats, MemberMedia};
 use crate::network::control::{C2S, S2C};
 
 pub const SERVICE_TYPE: &str = "_weft._tcp.local.";
@@ -513,6 +513,14 @@ impl NetworkEngine {
     }
 
     pub fn start_with(device_name: String, enable_audio: bool) -> Result<Self, String> {
+        Self::start_with_config(device_name, enable_audio, MediaConfig::default())
+    }
+
+    pub fn start_with_config(
+        device_name: String,
+        enable_audio: bool,
+        config: MediaConfig,
+    ) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -528,7 +536,7 @@ impl NetworkEngine {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         inner.set_addr_port(addr, port);
 
-        let media = Arc::new(MediaEngine::new(enable_audio)?);
+        let media = Arc::new(MediaEngine::new_with_config(enable_audio, config)?);
         inner.set_media(media);
 
         let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS: {e}"))?;

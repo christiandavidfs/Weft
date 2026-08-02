@@ -102,5 +102,5 @@ flutter_rust_bridge_codegen generate
 - [x] **Fase 2**: sincronía básica — un dispositivo transmite un archivo, los demás reproducen alineados (UDP, jitter buffer, NTP-lite, playback cpal)
 - [~] **Fase 3**: captura de micrófono opcional con downmix estéreo y resampler (macOS nativo; loopback del sistema pendiente: requiere driver virtual por plataforma, Android: solo archivos)
 - [x] **Fase 4**: handoff de roles con crossfade — el coordinador pide el token al transmisor actual (`cede?`, timeout 2 s) y, si cede, el receptor mezcla la cola del viejo con la cabeza del nuevo (~100 ms) sin cortes; rollback si el nuevo no emite
-- [ ] **Fase 5**: escala a 10+ dispositivos, tuning de jitter/drift
+- [x] **Fase 5**: escala a 10+ dispositivos — fan-out del plano de medios probado con 1 transmisor y 10 receptores; tuning de jitter/drift configurable (`MediaConfig`: capacidad del jitter buffer, latencia objetivo y umbral de drift) sin recompilar
 - [ ] **Fase 6**: futuro — soporte Tailscale (redes remotas) y modo DJ con mezcla de múltiples fuentes

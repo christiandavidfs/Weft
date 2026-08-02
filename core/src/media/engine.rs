@@ -14,8 +14,29 @@ use crate::media::transport::MediaSocket;
 use crate::media::{CHANNELS, FRAME_SAMPLES, FRAME_US, SAMPLE_RATE};
 
 const RX_TIMEOUT: Duration = Duration::from_millis(50);
-const JITTER_CAPACITY_US: u128 = 200_000;
-const TARGET_LATENCY_US: u128 = 100_000;
+
+/// Tunable media-plane parameters. Latency/robustness trade-offs are exposed
+/// here so deployments can adapt to their network without recompiling:
+/// - `jitter_capacity_us`: how much arrival jitter the receiver absorbs.
+/// - `target_latency_us`: end-to-end pre-roll the transmitter schedules.
+/// - `drift_threshold_frames`: how far the output may drift from the session
+///   timeline before a correction frame is stuffed/dropped (~1ms at 48kHz).
+#[derive(Debug, Clone, Copy)]
+pub struct MediaConfig {
+    pub jitter_capacity_us: u128,
+    pub target_latency_us: u128,
+    pub drift_threshold_frames: u64,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            jitter_capacity_us: 200_000,
+            target_latency_us: 100_000,
+            drift_threshold_frames: 48,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MemberMedia {
@@ -65,6 +86,7 @@ pub struct MediaEngine {
     source_id: Arc<AtomicU64>,
     last_error: Arc<Mutex<String>>,
     stop: Arc<AtomicBool>,
+    config: MediaConfig,
     #[allow(dead_code)]
     rx_thread: thread::JoinHandle<()>,
     #[allow(dead_code)]
@@ -80,6 +102,10 @@ struct CaptureState {
 
 impl MediaEngine {
     pub fn new(enable_audio: bool) -> Result<Self, String> {
+        Self::new_with_config(enable_audio, MediaConfig::default())
+    }
+
+    pub fn new_with_config(enable_audio: bool, config: MediaConfig) -> Result<Self, String> {
         let socket = MediaSocket::bind()?;
         let clock = Arc::new(Mutex::new(MediaClock::new(0)));
         let (packet_tx, packet_rx) = flume::bounded::<AudioPacket>(2048);
@@ -89,7 +115,8 @@ impl MediaEngine {
         let playback = if enable_audio {
             let pb_state = Arc::new(Mutex::new(PlaybackState::new(
                 clock.clone(),
-                JitterBuffer::new(JITTER_CAPACITY_US),
+                JitterBuffer::new(config.jitter_capacity_us),
+                config.drift_threshold_frames,
             )));
             let pb_thread = spawn_playback(pb_state.clone(), packet_rx, stop.clone());
             Some((pb_state, pb_thread))
@@ -126,6 +153,7 @@ impl MediaEngine {
             source_id: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(Mutex::new(String::new())),
             stop,
+            config,
             rx_thread,
         })
     }
@@ -204,7 +232,11 @@ impl MediaEngine {
         }
         let (session_tag, base_pts, base_local) = {
             let c = self.clock.lock().unwrap();
-            (c.session_id(), (c.now_session_us() + TARGET_LATENCY_US) as u64, c.now_local_us())
+            (
+                c.session_id(),
+                (c.now_session_us() + self.config.target_latency_us) as u64,
+                c.now_local_us(),
+            )
         };
         let active = self.state.lock().unwrap().session_active;
         if !active || session_tag == 0 {
@@ -340,6 +372,7 @@ impl MediaEngine {
         let transmitting = self.transmitting.clone();
         let self_transmitting = self.transmitting.clone();
         let source_id = self.source_id.load(Ordering::Relaxed);
+        let target_latency_us = self.config.target_latency_us;
 
         thread::spawn(move || {
             let result = run_transmitter(
@@ -352,6 +385,7 @@ impl MediaEngine {
                 &stop,
                 &self_transmitting,
                 source_id,
+                target_latency_us,
             );
             match result {
                 Ok(()) => {
@@ -442,13 +476,14 @@ fn run_transmitter(
     stop: &AtomicBool,
     transmitting: &AtomicBool,
     source_id: u64,
+    target_latency_us: u128,
 ) -> Result<(), String> {
     let pcm = decode_file_to_pcm(Path::new(path))?;
     let (session_tag, base_pts, base_local) = {
         let c = clock.lock().unwrap();
         (
             c.session_id(),
-            (c.now_session_us() + TARGET_LATENCY_US) as u64,
+            (c.now_session_us() + target_latency_us) as u64,
             c.now_local_us(),
         )
     };

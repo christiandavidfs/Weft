@@ -11,10 +11,6 @@ use crate::media::jitter::JitterBuffer;
 use crate::media::packet::AudioPacket;
 use crate::media::{CHANNELS, SAMPLE_RATE};
 
-/// How far (in frames) the output may drift from the session timeline before a
-/// correction frame is stuffed (duplicated) or dropped. ~1ms at 48kHz.
-const DRIFT_THRESHOLD_FRAMES: u64 = 48;
-
 /// Length of the crossfade during a handoff, in output frames. ~100ms at 48kHz.
 const CROSSFADE_FRAMES: usize = 4800;
 
@@ -120,7 +116,11 @@ pub struct PlaybackState {
 }
 
 impl PlaybackState {
-    pub fn new(clock: Arc<Mutex<MediaClock>>, jitter: JitterBuffer) -> Self {
+    pub fn new(
+        clock: Arc<Mutex<MediaClock>>,
+        jitter: JitterBuffer,
+        drift_threshold_frames: u64,
+    ) -> Self {
         Self {
             clock,
             jitter,
@@ -133,7 +133,7 @@ impl PlaybackState {
             underruns: 0,
             stuffed: 0,
             dropped: 0,
-            drift: DriftController::new(DRIFT_THRESHOLD_FRAMES),
+            drift: DriftController::new(drift_threshold_frames),
             source_id: None,
             crossfade: None,
         }
@@ -403,6 +403,11 @@ mod tests {
     use super::*;
     use crate::media::FRAME_US;
 
+    /// Default jitter capacity for unit tests, ~200ms.
+    const TEST_JITTER_CAPACITY_US: u128 = 200_000;
+    /// Default drift threshold for unit tests, ~1ms at 48kHz.
+    const DRIFT_THRESHOLD_FRAMES: u64 = 48;
+
     fn shared_clock(tag: u64) -> Arc<Mutex<MediaClock>> {
         Arc::new(Mutex::new(MediaClock::new(tag)))
     }
@@ -420,9 +425,19 @@ mod tests {
     }
 
     #[test]
+    fn drift_threshold_is_configurable() {
+        // With a tight threshold (4 frames), a 5-frame surplus already stuffs,
+        // while a default 48-frame threshold would stay quiet.
+        let mut d = DriftController::new(4);
+        d.reset(100_000, 0);
+        assert_eq!(d.tick(110_000, 484), DriftAction::None);
+        assert_eq!(d.tick(110_000, 485), DriftAction::Stuff);
+    }
+
+    #[test]
     fn playback_outputs_source_then_underruns() {
         let clock = shared_clock(1);
-        let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
+        let mut st = PlaybackState::new(clock, JitterBuffer::new(TEST_JITTER_CAPACITY_US), DRIFT_THRESHOLD_FRAMES);
         // One packet with 10 frames (20 samples), pts due immediately.
         let samples: Vec<i16> = (0..20).map(|i| i as i16).collect();
         let pkt = AudioPacket::new(1, 0, 0, 0, samples.clone(), SAMPLE_RATE, CHANNELS);
@@ -446,7 +461,7 @@ mod tests {
     #[test]
     fn playback_orders_multiple_packets() {
         let clock = shared_clock(1);
-        let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
+        let mut st = PlaybackState::new(clock, JitterBuffer::new(TEST_JITTER_CAPACITY_US), DRIFT_THRESHOLD_FRAMES);
         // Two one-frame packets, arrival in reverse order, both due immediately.
         assert!(st.push(AudioPacket::new(1, 0, 1, 0, vec![333, 444], SAMPLE_RATE, CHANNELS)));
         assert!(st.push(AudioPacket::new(1, 0, 0, 0, vec![111, 222], SAMPLE_RATE, CHANNELS)));
@@ -462,7 +477,7 @@ mod tests {
     #[test]
     fn packet_pts_gate_playback() {
         let clock = shared_clock(1);
-        let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
+        let mut st = PlaybackState::new(clock, JitterBuffer::new(TEST_JITTER_CAPACITY_US), DRIFT_THRESHOLD_FRAMES);
         // Packet scheduled in the future (pts in the future relative to now).
         let samples = vec![0i16; 20];
         let future_pts = st.now_session_us() + 100 * FRAME_US as u128;
@@ -478,7 +493,7 @@ mod tests {
     #[test]
     fn source_switch_crossfades_old_tail_with_new_head() {
         let clock = shared_clock(1);
-        let mut st = PlaybackState::new(clock, JitterBuffer::new(200_000));
+        let mut st = PlaybackState::new(clock, JitterBuffer::new(TEST_JITTER_CAPACITY_US), DRIFT_THRESHOLD_FRAMES);
         // Old source: two one-frame packets, due immediately.
         assert!(st.push(AudioPacket::new(1, 7, 0, 0, vec![1000, 1000], SAMPLE_RATE, CHANNELS)));
         assert!(st.push(AudioPacket::new(1, 7, 1, 0, vec![2000, 2000], SAMPLE_RATE, CHANNELS)));

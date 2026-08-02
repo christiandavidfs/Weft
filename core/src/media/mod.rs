@@ -15,7 +15,7 @@ pub const FRAME_US: u64 = FRAME_MS * 1000;
 
 pub use capture::{input_devices, open_capture, StreamResampler};
 pub use clock::{ClockOffset, MediaClock};
-pub use engine::{MediaEngine, MediaStats, MemberMedia};
+pub use engine::{MediaConfig, MediaEngine, MediaStats, MemberMedia};
 pub use jitter::{JitterBuffer, JitterStats};
 pub use packet::{decode_packet, encode_packet, AudioPacket};
 pub use source::{decode_file_to_pcm, PacketizedSource};
