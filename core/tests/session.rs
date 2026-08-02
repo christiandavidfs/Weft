@@ -180,28 +180,32 @@ fn receiver_plays_stream_through_cpal() {
     std::fs::create_dir_all(&dir).unwrap();
     let wav = write_tone_wav(&dir, 2);
 
-    // El miembro habilita la salida de audio real (cpal).
+    // El coordinador no necesita audio; el miembro sí lo habilita (cpal).
+    // Alpha queda de coordinador primero para que el miembro con audio sea
+    // siempre Beta (evita la carrera de bootstrap que dejaba al miembro sin
+    // playback).
     let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
-    let b = NetworkEngine::start_with("Beta".to_string(), true).unwrap();
-
     let sa = || a.status();
+    let a_is_coord = wait_until(Duration::from_secs(10), || {
+        sa().role.as_str() == "coordinator"
+    });
+    assert!(a_is_coord, "Alpha no quedó de coordinadora: {:?}", sa());
+
+    let b = NetworkEngine::start_with("Beta".to_string(), true).unwrap();
     let sb = || b.status();
 
     let formed = wait_until(Duration::from_secs(15), || {
         let sa = sa();
         let sb = sb();
-        let (ra, rb) = (sa.role.as_str(), sb.role.as_str());
-        let both_members = sa.members.len() == 2 && sb.members.len() == 2;
-        ((ra == "coordinator" && rb == "member") || (ra == "member" && rb == "coordinator"))
-            && both_members
+        sa.role.as_str() == "coordinator"
+            && sb.role.as_str() == "member"
+            && sa.members.len() == 2
+            && sb.members.len() == 2
     });
     assert!(formed, "no se formó la sesión: A={:?} B={:?}", sa(), sb());
 
-    let (coord, member): (&NetworkEngine, &NetworkEngine) = if sa().role == "coordinator" {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
+    let coord = &a;
+    let member = &b;
 
     coord.request_transmit();
     let granted = wait_until(Duration::from_secs(5), || {
