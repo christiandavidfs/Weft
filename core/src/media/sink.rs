@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -312,11 +312,123 @@ impl PlaybackState {
     }
 }
 
+/// Any object that can absorb incoming audio packets and render interleaved
+/// stereo f32 frames. One filled buffer drives a cpal callback. Both the plain
+/// `PlaybackState` (single source) and the `DjMixer` (multiple simultaneous
+/// sources) implement it, letting the engine pick at construction time.
+pub trait Sink: Send {
+    fn push(&mut self, pkt: AudioPacket) -> bool;
+    fn fill_float(&mut self, out: &mut [f32]);
+    fn stats(&self) -> PlaybackStats;
+}
+
+/// DJ mode: mixes several simultaneous sources (one per transmitter) into a
+/// single output. Each source keeps its own `PlaybackState` (jitter + drift)
+/// but they all share the session `MediaClock`, so everything stays on the same
+/// timeline. Output is the sum of every active source's frame, auto-gained by
+/// the number of sources that actually produced sound.
+pub struct DjMixer {
+    clock: Arc<Mutex<MediaClock>>,
+    sources: HashMap<u64, PlaybackState>,
+    jitter_capacity_us: u128,
+    drift_threshold_frames: u64,
+    played_frames: u64,
+}
+
+impl DjMixer {
+    pub fn new(
+        clock: Arc<Mutex<MediaClock>>,
+        jitter_capacity_us: u128,
+        drift_threshold_frames: u64,
+    ) -> Self {
+        Self {
+            clock,
+            sources: HashMap::new(),
+            jitter_capacity_us,
+            drift_threshold_frames,
+            played_frames: 0,
+        }
+    }
+
+    pub fn num_sources(&self) -> usize {
+        self.sources.len()
+    }
+}
+
+impl Sink for DjMixer {
+    fn push(&mut self, pkt: AudioPacket) -> bool {
+        let source = self.sources.entry(pkt.transmitter_id).or_insert_with(|| {
+            PlaybackState::new(
+                self.clock.clone(),
+                JitterBuffer::new(self.jitter_capacity_us),
+                self.drift_threshold_frames,
+            )
+        });
+        source.push(pkt)
+    }
+
+    fn fill_float(&mut self, out: &mut [f32]) {
+        let mut mix = vec![0.0f32; out.len()];
+        let mut active = 0u32;
+        for src in self.sources.values_mut() {
+            let mut buf = vec![0.0f32; out.len()];
+            src.fill_float(&mut buf);
+            if buf.iter().any(|s| s.abs() > f32::EPSILON) {
+                active += 1;
+            }
+            for (m, s) in mix.iter_mut().zip(buf.iter()) {
+                *m += s;
+            }
+        }
+        self.played_frames += (out.len() / 2) as u64;
+        if active == 0 {
+            out.fill(0.0);
+            return;
+        }
+        let gain = 1.0 / active as f32;
+        for (o, m) in out.iter_mut().zip(mix.iter()) {
+            *o = (m * gain).clamp(-1.0, 1.0);
+        }
+    }
+
+    fn stats(&self) -> PlaybackStats {
+        let mut agg = PlaybackStats {
+            playing: self.played_frames > 0,
+            played_frames: self.played_frames,
+            ..PlaybackStats::default()
+        };
+        for s in self.sources.values() {
+            let st = s.stats();
+            agg.underruns += st.underruns;
+            agg.stuffed += st.stuffed;
+            agg.dropped += st.dropped;
+            agg.buffered_packets += st.buffered_packets;
+            agg.buffered_us += st.buffered_us;
+            agg.lost_packets += st.lost_packets;
+        }
+        agg
+    }
+}
+
+impl Sink for PlaybackState {
+    fn push(&mut self, pkt: AudioPacket) -> bool {
+        PlaybackState::push(self, pkt)
+    }
+
+    fn fill_float(&mut self, out: &mut [f32]) {
+        PlaybackState::fill_float(self, out)
+    }
+
+    fn stats(&self) -> PlaybackStats {
+        PlaybackState::stats(self)
+    }
+}
+
 /// Spawns a thread that owns a cpal output stream and feeds it from a shared
-/// `PlaybackState`. Packets arrive via `rx` and are drained by the audio
-/// callback. Returns the thread handle.
+/// `Sink`. Packets arrive via `rx` and are drained by the audio callback.
+/// Returns the thread handle.
 pub fn spawn_playback(
-    state: Arc<Mutex<PlaybackState>>,
+    state: Arc<Mutex<dyn Sink>>,
     rx: flume::Receiver<AudioPacket>,
     stop: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
@@ -372,7 +484,7 @@ pub fn spawn_playback(
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    state: Arc<Mutex<PlaybackState>>,
+    state: Arc<Mutex<dyn Sink>>,
     rx: flume::Receiver<AudioPacket>,
 ) -> Result<cpal::Stream, String>
 where
@@ -511,5 +623,30 @@ mod tests {
         assert!((out[2] - expected).abs() < 1e-4, "second frame {:?}", out[2]);
         assert_eq!(st.stats().underruns, 0);
         assert!(st.crossfade.is_none(), "crossfade should finish");
+    }
+
+    #[test]
+    fn dj_mixer_sums_and_auto_gains_two_sources() {
+        let clock = shared_clock(1);
+        let mut mix = DjMixer::new(clock, TEST_JITTER_CAPACITY_US, DRIFT_THRESHOLD_FRAMES);
+        // Source A: one frame at full scale.
+        assert!(mix.push(AudioPacket::new(1, 10, 0, 0, vec![16384, 16384], SAMPLE_RATE, CHANNELS)));
+        // Source B: same frame; not active yet (no sound until it fills).
+        // Two active sources -> gain 0.5 each.
+
+        let mut two = vec![0.0f32; 4];
+        mix.fill_float(&mut two);
+        // Only source A has data so far -> single active -> full scale half.
+        // 16384/32768 = 0.5, no other source -> gain 1 -> 0.5.
+        assert!((two[0] - 0.5).abs() < 1e-6, "single source {:?}", two[0]);
+
+        // Now source B streams too.
+        assert!(mix.push(AudioPacket::new(1, 20, 0, 0, vec![16384, 16384], SAMPLE_RATE, CHANNELS)));
+        let mut both = vec![0.0f32; 4];
+        mix.fill_float(&mut both);
+        // Both active, each contributes 16384/32768 = 0.5, sum=1.0, gain 0.5.
+        let expected = (0.5 + 0.5) * 0.5; // 0.5
+        assert!((both[0] - expected).abs() < 1e-6, "two sources {:?}", both[0]);
+        assert_eq!(mix.num_sources(), 2);
     }
 }

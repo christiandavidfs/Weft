@@ -8,7 +8,7 @@ use crate::media::capture::{check_input_device, open_capture, silence_frame, Str
 use crate::media::clock::MediaClock;
 use crate::media::jitter::JitterBuffer;
 use crate::media::packet::AudioPacket;
-use crate::media::sink::{spawn_playback, PlaybackState, PlaybackStats};
+use crate::media::sink::{spawn_playback, DjMixer, PlaybackState, PlaybackStats, Sink};
 use crate::media::source::{decode_file_to_pcm, PacketizedSource};
 use crate::media::transport::MediaSocket;
 use crate::media::{CHANNELS, FRAME_SAMPLES, FRAME_US, SAMPLE_RATE};
@@ -79,7 +79,7 @@ pub struct MediaEngine {
     socket: MediaSocket,
     clock: Arc<Mutex<MediaClock>>,
     state: Arc<Mutex<MediaState>>,
-    playback: Option<Arc<Mutex<PlaybackState>>>,
+    playback: Option<Arc<Mutex<dyn Sink>>>,
     events: Arc<Mutex<Option<Box<dyn Fn(&str, String) + Send + Sync>>>>,
     received: Arc<AtomicU64>,
     transmitted: Arc<AtomicU64>,
@@ -117,11 +117,19 @@ impl MediaEngine {
         let stop = Arc::new(AtomicBool::new(false));
 
         let playback = if enable_audio {
-            let pb_state = Arc::new(Mutex::new(PlaybackState::new(
-                clock.clone(),
-                JitterBuffer::new(config.jitter_capacity_us),
-                config.drift_threshold_frames,
-            )));
+            let pb_state: Arc<Mutex<dyn Sink>> = if config.dj {
+                Arc::new(Mutex::new(DjMixer::new(
+                    clock.clone(),
+                    config.jitter_capacity_us,
+                    config.drift_threshold_frames,
+                )))
+            } else {
+                Arc::new(Mutex::new(PlaybackState::new(
+                    clock.clone(),
+                    JitterBuffer::new(config.jitter_capacity_us),
+                    config.drift_threshold_frames,
+                )))
+            };
             let pb_thread = spawn_playback(pb_state.clone(), packet_rx, stop.clone());
             Some((pb_state, pb_thread))
         } else {
