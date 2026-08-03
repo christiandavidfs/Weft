@@ -22,6 +22,7 @@ const RX_TIMEOUT: Duration = Duration::from_millis(50);
 /// - `drift_threshold_frames`: how far the output may drift from the session
 ///   timeline before a correction frame is stuffed/dropped (~1ms at 48kHz).
 /// - `dj`: enables DJ mode to mix multiple simultaneous sources.
+///
 /// All non-`dj` values retain original defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct MediaConfig {

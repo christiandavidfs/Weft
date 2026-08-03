@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -71,6 +71,9 @@ pub struct NetworkStatus {
     pub session_id: String,
     pub coordinator_id: String,
     pub transmitter_id: String,
+    /// Session-wide DJ mode and who is currently streaming in it.
+    pub dj: bool,
+    pub dj_transmitters: Vec<String>,
     pub members: Vec<MemberInfo>,
     pub peers: Vec<PeerInfo>,
     pub pending_transmit_requests: Vec<String>,
@@ -93,6 +96,10 @@ struct State {
     session_id: String,
     coordinator_id: String,
     transmitter_id: Option<String>,
+    /// Session-wide DJ mode: lets several devices transmit simultaneously.
+    dj: bool,
+    /// Device ids currently streaming in DJ mode. Empty/ignored outside DJ mode.
+    dj_transmitters: BTreeSet<String>,
     members: BTreeMap<String, MemberInfo>,
     peers: BTreeMap<String, PeerInfo>,
     peers_by_instance: HashMap<String, String>,
@@ -147,6 +154,8 @@ impl SessionInner {
                 session_id: String::new(),
                 coordinator_id: String::new(),
                 transmitter_id: None,
+                dj: false,
+                dj_transmitters: BTreeSet::new(),
                 members: BTreeMap::new(),
                 peers: BTreeMap::new(),
                 peers_by_instance: HashMap::new(),
@@ -197,6 +206,8 @@ impl SessionInner {
             session_id: s.session_id.clone(),
             coordinator_id: s.coordinator_id.clone(),
             transmitter_id: s.transmitter_id.clone().unwrap_or_default(),
+            dj: s.dj,
+            dj_transmitters: s.dj_transmitters.iter().cloned().collect(),
             members: s.members.values().cloned().collect(),
             peers: s.peers.values().cloned().collect(),
             pending_transmit_requests: s.pending_requests.clone(),
@@ -259,6 +270,13 @@ impl SessionInner {
         let mut s = self.lock();
         s.addr = addr;
         s.port = port;
+    }
+
+    /// Enable/disable session-wide DJ mode. Should be set before the session
+    /// forms (using the coordinator's `MediaConfig.dj`); members adopt it via
+    /// the `Welcome` message.
+    pub fn set_dj(&self, dj: bool) {
+        self.lock().dj = dj;
     }
 
     // ---- mDNS advertisement ----
@@ -554,6 +572,7 @@ impl NetworkEngine {
         let addr: IpAddr = detect_local_ip().unwrap_or(IpAddr::V4("127.0.0.1".parse().unwrap()));
         let inner = SessionInner::new(rt.handle().clone(), device_id.clone(), device_name);
         inner.set_addr_port(addr, 0);
+        inner.set_dj(config.dj);
 
         let listener = rt
             .block_on(TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], 0))))
@@ -625,6 +644,12 @@ impl NetworkEngine {
 
     pub fn release_transmit(&self) {
         self.inner.release_transmit();
+    }
+
+    /// DJ mode: toggle this device as a DJ transmitter (multiple simultaneous
+    /// sources). Only effective when the session is in DJ mode.
+    pub fn dj_transmit(&self, active: bool) {
+        self.inner.dj_transmit(active);
     }
 
     pub fn approve_transmit(&self, device_id: &str) {
@@ -741,11 +766,15 @@ impl SessionInner {
 
     fn refresh_transmitter_media(&self) {
         if let Some(engine) = self.media() {
-            let (my_id, tx_id) = {
+            let should = {
                 let s = self.lock();
-                (s.device_id.clone(), s.transmitter_id.clone())
+                if s.dj {
+                    s.dj_transmitters.contains(&s.device_id)
+                } else {
+                    s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+                }
             };
-            engine.set_transmitter(tx_id.as_deref() == Some(my_id.as_str()));
+            engine.set_transmitter(should);
         }
     }
 
@@ -754,9 +783,10 @@ impl SessionInner {
     }
 
     fn remove_conn(&self, device_id: &str) {
-        let was_transmitter = {
+        let (was_transmitter, was_dj) = {
             let mut s = self.lock();
             s.conns.remove(device_id);
+            let was_dj = s.dj && s.dj_transmitters.remove(device_id);
             let was = s.transmitter_id.as_ref() == Some(&device_id.to_string());
             if was {
                 s.transmitter_id = None;
@@ -765,11 +795,16 @@ impl SessionInner {
                 s.pending_requests.remove(pos);
             }
             s.members.remove(device_id);
-            was
+            (was, was_dj)
         };
         self.broadcast(&S2C::MemberLeave { device_id: device_id.to_string() });
         self.broadcast_members();
         self.refresh_media_members();
+        if was_dj {
+            // A DJ transmitter disconnected: republish the set so remaining
+            // members stop expecting it.
+            self.broadcast_dj_set();
+        }
         if was_transmitter {
             self.broadcast(&S2C::TransmitRevoked { device_id: device_id.to_string() });
             self.grant_next_pending();
@@ -1025,6 +1060,42 @@ impl SessionInner {
         }
     }
 
+    /// DJ mode: toggle this device as one of several simultaneous transmitters.
+    /// Runs on the coordinator (updates + broadcasts the set) or, as a member,
+    /// forwards the intent to the coordinator.
+    pub fn dj_transmit(&self, active: bool) {
+        let id = self.my_id();
+        if self.is_coordinator() {
+            if self.apply_dj_member(id.clone(), active) {
+                self.broadcast_dj_set();
+            }
+        } else {
+            self.send_to_coordinator(&C2S::DjSetTransmit { device_id: id, active });
+        }
+    }
+
+    /// Coordinator: add/remove `device_id` in the DJ transmission set. Returns
+    /// true if it actually changed.
+    fn apply_dj_member(&self, device_id: String, active: bool) -> bool {
+        let mut s = self.lock();
+        if active {
+            s.dj_transmitters.insert(device_id)
+        } else {
+            s.dj_transmitters.remove(&device_id)
+        }
+    }
+
+    /// Coordinator: publish the current DJ transmitter set to every member.
+    fn broadcast_dj_set(&self) {
+        let transmitters = {
+            let s = self.lock();
+            s.dj_transmitters.iter().cloned().collect::<Vec<String>>()
+        };
+        self.broadcast(&S2C::DjTransmitSet { transmitters: transmitters.clone() });
+        self.emit("dj_set", "", "", &format!("transmisores DJ: {}", transmitters.join(", ")));
+        self.refresh_transmitter_media();
+    }
+
     pub fn release_transmit(&self) {
         let id = self.my_id();
         if self.is_coordinator() {
@@ -1078,10 +1149,20 @@ impl SessionInner {
     pub fn transmit_file(&self, path: &str) -> Result<(), String> {
         let has_token = {
             let s = self.lock();
-            s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+            if s.dj {
+                s.dj_transmitters.contains(&s.device_id)
+            } else {
+                s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+            }
         };
         if !has_token {
-            return Err("no tengo el token de transmisión".to_string());
+            return Err(
+                if self.lock().dj {
+                    "no soy un transmisor DJ".to_string()
+                } else {
+                    "no tengo el token de transmisión".to_string()
+                },
+            );
         }
         let Some(engine) = self.media() else {
             return Err("media no disponible".to_string());
@@ -1097,10 +1178,20 @@ impl SessionInner {
     pub fn start_capture(&self, device_name: Option<&str>) -> Result<(), String> {
         let has_token = {
             let s = self.lock();
-            s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+            if s.dj {
+                s.dj_transmitters.contains(&s.device_id)
+            } else {
+                s.transmitter_id.as_deref() == Some(s.device_id.as_str())
+            }
         };
         if !has_token {
-            return Err("no tengo el token de transmisión".to_string());
+            return Err(
+                if self.lock().dj {
+                    "no soy un transmisor DJ".to_string()
+                } else {
+                    "no tengo el token de transmisión".to_string()
+                },
+            );
         }
         let Some(engine) = self.media() else {
             return Err("media no disponible".to_string());
@@ -1163,6 +1254,13 @@ impl SessionInner {
                     self.begin_handoff_if_busy(&device_id);
                 }
                 self.refresh_transmitter_media();
+            }
+            C2S::DjSetTransmit { device_id, active } => {
+                if self.is_coordinator() {
+                    if self.apply_dj_member(device_id, active) {
+                        self.broadcast_dj_set();
+                    }
+                }
             }
             C2S::CedeReply { device_id, cede } => {
                 let current = {
@@ -1253,12 +1351,15 @@ impl SessionInner {
 
     fn apply_s2c(&self, msg: S2C) {
         match msg {
-            S2C::Welcome { session_id, coordinator_id } => {
+            S2C::Welcome { session_id, coordinator_id, dj } => {
                 {
                     let mut s = self.lock();
                     s.session_id = session_id.clone();
                     if !coordinator_id.is_empty() {
                         s.coordinator_id = coordinator_id.clone();
+                    }
+                    if dj {
+                        s.dj = true;
                     }
                 }
                 self.configure_media_session();
@@ -1299,6 +1400,14 @@ impl SessionInner {
             S2C::MemberLeave { device_id } => {
                 self.lock().members.remove(&device_id);
                 self.refresh_media_members();
+            }
+            S2C::DjTransmitSet { transmitters } => {
+                {
+                    let mut s = self.lock();
+                    s.dj_transmitters = transmitters.into_iter().collect();
+                }
+                self.refresh_transmitter_media();
+                self.emit("dj_set", "", "", "actualización de transmisores DJ");
             }
             S2C::TransmitGranted { device_id } => {
                 {
@@ -1415,12 +1524,13 @@ async fn handle_incoming(inner: Arc<SessionInner>, stream: TcpStream) {
                             break;
                         }
                         let (session_id, coordinator_id) = inner.session_ids();
+                        let dj = inner.lock().dj;
                         let my_port = inner.lock().port;
                         let addr = peer_ip.clone().unwrap_or_default();
                         inner.register_conn(device_id.clone(), tx.clone());
                         inner.add_member(&device_id, &device_name, addr, my_port, media_port);
                         let _ = tx.send(WsMessage::Text(
-                            serde_json::to_string(&S2C::Welcome { session_id, coordinator_id }).unwrap(),
+                            serde_json::to_string(&S2C::Welcome { session_id, coordinator_id, dj }).unwrap(),
                         ));
                         my_id = Some(device_id);
                     }

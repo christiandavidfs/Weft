@@ -470,3 +470,64 @@ fn coordinator_rolls_back_token_when_new_transmitter_is_silent() {
     c.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn dj_mode_mixes_two_simultaneous_transmitters() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_dj_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 1);
+    let dj_config = || weft_core::media::MediaConfig { dj: true, ..Default::default() };
+
+    // Coordinator first; let it bootstrap alone so the session is stable before
+    // others join (avoids the mDNS multi-device bootstrap race).
+    let a = NetworkEngine::start_with_config("Alpha".to_string(), false, dj_config()).unwrap();
+    let sa = || a.status();
+    let a_is_coord = wait_until(Duration::from_secs(10), || sa().role.as_str() == "coordinator");
+    assert!(a_is_coord, "Alpha no quedó de coordinadora: {:?}", sa());
+
+    let b = NetworkEngine::start_with_config("Beta".to_string(), false, dj_config()).unwrap();
+    let c = NetworkEngine::start_with_config("Gamma".to_string(), false, dj_config()).unwrap();
+    let (sb, sc) = (|| b.status(), || c.status());
+
+    // Beta and Gamma join Alpha's session; all three agree it's DJ mode.
+    let formed = wait_until(Duration::from_secs(15), || {
+        let (ra, rb, rc) = (sa(), sb(), sc());
+        let dj_ok = ra.dj && rb.dj && rc.dj;
+        ra.role.as_str() == "coordinator"
+            && rb.role.as_str() == "member"
+            && rc.role.as_str() == "member"
+            && ra.members.len() == 3
+            && rb.members.len() == 3
+            && rc.members.len() == 3
+            && dj_ok
+    });
+    assert!(formed, "no se formó la sesión DJ: A={:?} B={:?} C={:?}", sa(), sb(), sc());
+
+    // Both members join the DJ transmitter set.
+    b.dj_transmit(true);
+    c.dj_transmit(true);
+    let joined = wait_until(Duration::from_secs(8), || {
+        sa().dj_transmitters.len() == 2
+            && sa().dj_transmitters.contains(&b.status().device_id)
+            && sa().dj_transmitters.contains(&c.status().device_id)
+            && sb().dj_transmitters.len() == 2
+            && sc().dj_transmitters.len() == 2
+    });
+    assert!(joined, "no entraron al set DJ: A={:?} B={:?} C={:?}", sa(), sb(), sc());
+
+    // Without any token they can both stream their files simultaneously.
+    b.transmit_file(wav.to_str().unwrap()).expect("Beta no pudo transmitir en DJ");
+    c.transmit_file(wav.to_str().unwrap()).expect("Gamma no pudo transmitir en DJ");
+
+    // The coordinator receives packets (from both), proving concurrent streams.
+    let received = wait_until(Duration::from_secs(15), || {
+        a.media_stats().map(|m| m.received_packets >= 40).unwrap_or(false)
+    });
+    assert!(received, "el coordinador no recibió el stream DJ: {:?}", a.media_stats());
+
+    a.stop();
+    b.stop();
+    c.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

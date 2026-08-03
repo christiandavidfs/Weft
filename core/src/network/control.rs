@@ -14,6 +14,12 @@ pub enum C2S {
     ReleaseTransmit {
         device_id: String,
     },
+    /// DJ mode: toggle this device as one of several simultaneous transmitters.
+    /// Ignored when the session is not in DJ mode (single-token path stays).
+    DjSetTransmit {
+        device_id: String,
+        active: bool,
+    },
     /// Response to the coordinator's `AskCede`: whether this device gives up
     /// the transmit token to a requester.
     CedeReply {
@@ -32,6 +38,8 @@ pub enum S2C {
     Welcome {
         session_id: String,
         coordinator_id: String,
+        /// Session is in DJ mode (multiple simultaneous transmitters allowed).
+        dj: bool,
     },
     Members {
         members: Vec<MemberWire>,
@@ -54,6 +62,11 @@ pub enum S2C {
     },
     TransmitDenied {
         device_id: String,
+    },
+    /// DJ mode: coordinator publishes the current set of simultaneous
+    /// transmitters (by device_id) so every member knows who to listen to.
+    DjTransmitSet {
+        transmitters: Vec<String>,
     },
     /// Coordinator asks the current transmitter to cede so a handoff can start.
     AskCede {
