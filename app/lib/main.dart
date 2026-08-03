@@ -42,6 +42,7 @@ class _HomePageState extends State<HomePage> {
   final List<String> _events = [];
   List<String> _inputDevices = [];
   String? _inputDevice;
+  bool _djMode = false;
   StreamSubscription<NetworkEventView>? _sub;
   Timer? _poll;
 
@@ -90,7 +91,11 @@ class _HomePageState extends State<HomePage> {
   Future<void> _start() async {
     final name = _nameController.text.trim();
     try {
-      networkStartWith(deviceName: name.isEmpty ? 'dispositivo' : name, enableAudio: true);
+      networkStartWith(
+        deviceName: name.isEmpty ? 'dispositivo' : name,
+        enableAudio: true,
+        dj: _djMode,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
@@ -181,6 +186,17 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  SwitchListTile(
+                    value: _djMode,
+                    onChanged: running
+                        ? null
+                        : (v) => setState(() => _djMode = v),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Modo DJ'),
+                    subtitle: const Text(
+                        'Permite que varios dispositivos transmitan y se mezclen a la vez'),
+                  ),
+                  const SizedBox(height: 4),
                   Row(
                     children: [
                       Expanded(
@@ -216,6 +232,8 @@ class _HomePageState extends State<HomePage> {
                       running ? _shortId(_status.sessionId) : '—'),
                   _row('Coordinador', running ? _displayName(_status.coordinatorId) : '—'),
                   _row('Transmisor', running ? _displayName(_status.transmitterId) : '—'),
+                  if (_status.dj)
+                    _row('DJ', _djTransmittersLabel()),
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -236,6 +254,16 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ],
                   ),
+                  if (running && _status.dj) ...[
+                    const SizedBox(height: 12),
+                    FilledButton.tonalIcon(
+                      onPressed: _amDjTransmitter ? _leaveDj : _joinDj,
+                      icon: Icon(_amDjTransmitter ? Icons.clear : Icons.disc_full),
+                      label: Text(_amDjTransmitter
+                          ? 'Salir como transmisor DJ'
+                          : 'Unirse como transmisor DJ'),
+                    ),
+                  ],
                   if (amTransmitter) ...[
                     const SizedBox(height: 12),
                     TextField(
@@ -438,6 +466,23 @@ class _HomePageState extends State<HomePage> {
     setState(() => _status = networkStatus());
   }
 
+  bool get _amDjTransmitter => _status.djTransmitters.contains(_status.deviceId);
+
+  void _joinDj() {
+    networkDjTransmit(active: true);
+    setState(() => _status = networkStatus());
+  }
+
+  void _leaveDj() {
+    networkDjTransmit(active: false);
+    setState(() => _status = networkStatus());
+  }
+
+  String _djTransmittersLabel() {
+    if (_status.djTransmitters.isEmpty) return 'ninguno';
+    return _status.djTransmitters.map(_displayName).join(', ');
+  }
+
   /// The coordinator asked us (the current transmitter) to hand the token to
   /// another device. Ask the user, then answer.
   Future<void> _askCede(NetworkEventView ev) async {
@@ -500,6 +545,8 @@ NetworkStatusView emptyStatus() => const NetworkStatusView(
       sessionId: '',
       coordinatorId: '',
       transmitterId: '',
+      dj: false,
+      djTransmitters: [],
       members: [],
       peers: [],
       pendingTransmitRequests: [],

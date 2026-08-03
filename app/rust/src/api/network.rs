@@ -47,6 +47,10 @@ pub struct NetworkStatusView {
     pub session_id: String,
     pub coordinator_id: String,
     pub transmitter_id: String,
+    /// Session is in DJ mode (multiple simultaneous transmitters allowed).
+    pub dj: bool,
+    /// Device ids currently streaming in DJ mode.
+    pub dj_transmitters: Vec<String>,
     pub members: Vec<MemberView>,
     pub peers: Vec<PeerView>,
     pub pending_transmit_requests: Vec<String>,
@@ -70,9 +74,11 @@ impl From<NetworkStatus> for NetworkStatusView {
             device_name: s.device_name,
             role: s.role,
             session_id: s.session_id,
-            coordinator_id: s.coordinator_id,
-            transmitter_id: s.transmitter_id,
-            members: s
+coordinator_id: s.coordinator_id,
+        transmitter_id: s.transmitter_id,
+        dj: s.dj,
+        dj_transmitters: s.dj_transmitters,
+        members: s
                 .members
                 .into_iter()
                 .map(|m| MemberView {
@@ -118,6 +124,8 @@ fn empty_status() -> NetworkStatusView {
         session_id: String::new(),
         coordinator_id: String::new(),
         transmitter_id: String::new(),
+        dj: false,
+        dj_transmitters: Vec::new(),
         members: Vec::new(),
         peers: Vec::new(),
         pending_transmit_requests: Vec::new(),
@@ -194,8 +202,10 @@ impl From<weft_core::media::MediaStats> for MediaStatsView {
 }
 
 #[flutter_rust_bridge::frb(sync)]
-pub fn network_start_with(device_name: String, enable_audio: bool) -> Result<(), String> {
-    let engine = NetworkEngine::start_with(device_name, enable_audio).map_err(|e| e.to_string())?;
+pub fn network_start_with(device_name: String, enable_audio: bool, dj: bool) -> Result<(), String> {
+    let config = weft_core::media::MediaConfig { dj, ..Default::default() };
+    let engine = NetworkEngine::start_with_config(device_name, enable_audio, config)
+        .map_err(|e| e.to_string())?;
     {
         let mut guard = engine_ref().lock().unwrap();
         *guard = Some(engine);
@@ -233,6 +243,15 @@ pub fn network_request_transmit() {
 pub fn network_release_transmit() {
     if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
         engine.release_transmit();
+    }
+}
+
+/// DJ mode: toggle this device as a DJ transmitter (several devices stream
+/// simultaneously and receivers mix them). Only effective in a DJ session.
+#[flutter_rust_bridge::frb(sync)]
+pub fn network_dj_transmit(active: bool) {
+    if let Some(engine) = engine_ref().lock().unwrap().as_ref() {
+        engine.dj_transmit(active);
     }
 }
 

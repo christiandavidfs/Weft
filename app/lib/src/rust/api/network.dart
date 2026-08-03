@@ -23,9 +23,11 @@ Stream<NetworkEventView> networkEvents() =>
 void networkStartWith({
   required String deviceName,
   required bool enableAudio,
+  required bool dj,
 }) => RustLib.instance.api.crateApiNetworkNetworkStartWith(
   deviceName: deviceName,
   enableAudio: enableAudio,
+  dj: dj,
 );
 
 MediaStatsView? networkMediaStats() =>
@@ -39,6 +41,11 @@ void networkRequestTransmit() =>
 
 void networkReleaseTransmit() =>
     RustLib.instance.api.crateApiNetworkNetworkReleaseTransmit();
+
+/// DJ mode: toggle this device as a DJ transmitter (several devices stream
+/// simultaneously and receivers mix them). Only effective in a DJ session.
+void networkDjTransmit({required bool active}) =>
+    RustLib.instance.api.crateApiNetworkNetworkDjTransmit(active: active);
 
 void networkApproveTransmit({required String deviceId}) => RustLib.instance.api
     .crateApiNetworkNetworkApproveTransmit(deviceId: deviceId);
@@ -197,6 +204,12 @@ class NetworkStatusView {
   final String sessionId;
   final String coordinatorId;
   final String transmitterId;
+
+  /// Session is in DJ mode (multiple simultaneous transmitters allowed).
+  final bool dj;
+
+  /// Device ids currently streaming in DJ mode.
+  final List<String> djTransmitters;
   final List<MemberView> members;
   final List<PeerView> peers;
   final List<String> pendingTransmitRequests;
@@ -209,6 +222,8 @@ class NetworkStatusView {
     required this.sessionId,
     required this.coordinatorId,
     required this.transmitterId,
+    required this.dj,
+    required this.djTransmitters,
     required this.members,
     required this.peers,
     required this.pendingTransmitRequests,
@@ -223,6 +238,8 @@ class NetworkStatusView {
       sessionId.hashCode ^
       coordinatorId.hashCode ^
       transmitterId.hashCode ^
+      dj.hashCode ^
+      djTransmitters.hashCode ^
       members.hashCode ^
       peers.hashCode ^
       pendingTransmitRequests.hashCode;
@@ -239,6 +256,8 @@ class NetworkStatusView {
           sessionId == other.sessionId &&
           coordinatorId == other.coordinatorId &&
           transmitterId == other.transmitterId &&
+          dj == other.dj &&
+          djTransmitters == other.djTransmitters &&
           members == other.members &&
           peers == other.peers &&
           pendingTransmitRequests == other.pendingTransmitRequests;

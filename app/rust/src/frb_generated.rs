@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 753207239;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1855335011;
 
 // Section: executor
 
@@ -256,6 +256,38 @@ fn wire__crate__api__network__network_deny_transmit_impl(
             transform_result_sse::<_, ()>((move || {
                 let output_ok = Result::<_, ()>::Ok({
                     crate::api::network::network_deny_transmit(api_device_id);
+                })?;
+                Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__network__network_dj_transmit_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "network_dj_transmit",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_active = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Result::<_, ()>::Ok({
+                    crate::api::network::network_dj_transmit(api_active);
                 })?;
                 Ok(output_ok)
             })())
@@ -532,10 +564,14 @@ fn wire__crate__api__network__network_start_with_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_device_name = <String>::sse_decode(&mut deserializer);
             let api_enable_audio = <bool>::sse_decode(&mut deserializer);
+            let api_dj = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
-                let output_ok =
-                    crate::api::network::network_start_with(api_device_name, api_enable_audio)?;
+                let output_ok = crate::api::network::network_start_with(
+                    api_device_name,
+                    api_enable_audio,
+                    api_dj,
+                )?;
                 Ok(output_ok)
             })())
         },
@@ -832,6 +868,8 @@ impl SseDecode for crate::api::network::NetworkStatusView {
         let mut var_sessionId = <String>::sse_decode(deserializer);
         let mut var_coordinatorId = <String>::sse_decode(deserializer);
         let mut var_transmitterId = <String>::sse_decode(deserializer);
+        let mut var_dj = <bool>::sse_decode(deserializer);
+        let mut var_djTransmitters = <Vec<String>>::sse_decode(deserializer);
         let mut var_members = <Vec<crate::api::network::MemberView>>::sse_decode(deserializer);
         let mut var_peers = <Vec<crate::api::network::PeerView>>::sse_decode(deserializer);
         let mut var_pendingTransmitRequests = <Vec<String>>::sse_decode(deserializer);
@@ -843,6 +881,8 @@ impl SseDecode for crate::api::network::NetworkStatusView {
             session_id: var_sessionId,
             coordinator_id: var_coordinatorId,
             transmitter_id: var_transmitterId,
+            dj: var_dj,
+            dj_transmitters: var_djTransmitters,
             members: var_members,
             peers: var_peers,
             pending_transmit_requests: var_pendingTransmitRequests,
@@ -985,19 +1025,20 @@ fn pde_ffi_dispatcher_sync_impl(
         4 => wire__crate__api__engine__engine_stop_session_impl(ptr, rust_vec_len, data_len),
         6 => wire__crate__api__network__network_approve_transmit_impl(ptr, rust_vec_len, data_len),
         7 => wire__crate__api__network__network_deny_transmit_impl(ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__network__network_events_impl(ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__network__network_input_devices_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__network__network_media_stats_impl(ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__network__network_release_transmit_impl(ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__network__network_request_transmit_impl(ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__network__network_respond_to_cede_impl(ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__network__network_start_impl(ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__network__network_start_capture_impl(ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__network__network_start_with_impl(ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__network__network_status_impl(ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__network__network_stop_impl(ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__network__network_stop_capture_impl(ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__network__network_transmit_file_impl(ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__network__network_dj_transmit_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__network__network_events_impl(ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__network__network_input_devices_impl(ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__network__network_media_stats_impl(ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__network__network_release_transmit_impl(ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__network__network_request_transmit_impl(ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__network__network_respond_to_cede_impl(ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__network__network_start_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__network__network_start_capture_impl(ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__network__network_start_with_impl(ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__network__network_status_impl(ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__network__network_stop_impl(ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__network__network_stop_capture_impl(ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__network__network_transmit_file_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1093,6 +1134,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::network::NetworkStatusView {
             self.session_id.into_into_dart().into_dart(),
             self.coordinator_id.into_into_dart().into_dart(),
             self.transmitter_id.into_into_dart().into_dart(),
+            self.dj.into_into_dart().into_dart(),
+            self.dj_transmitters.into_into_dart().into_dart(),
             self.members.into_into_dart().into_dart(),
             self.peers.into_into_dart().into_dart(),
             self.pending_transmit_requests.into_into_dart().into_dart(),
@@ -1284,6 +1327,8 @@ impl SseEncode for crate::api::network::NetworkStatusView {
         <String>::sse_encode(self.session_id, serializer);
         <String>::sse_encode(self.coordinator_id, serializer);
         <String>::sse_encode(self.transmitter_id, serializer);
+        <bool>::sse_encode(self.dj, serializer);
+        <Vec<String>>::sse_encode(self.dj_transmitters, serializer);
         <Vec<crate::api::network::MemberView>>::sse_encode(self.members, serializer);
         <Vec<crate::api::network::PeerView>>::sse_encode(self.peers, serializer);
         <Vec<String>>::sse_encode(self.pending_transmit_requests, serializer);
