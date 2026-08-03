@@ -18,4 +18,5 @@ pub use clock::{ClockOffset, MediaClock};
 pub use engine::{MediaConfig, MediaEngine, MediaStats, MemberMedia};
 pub use jitter::{JitterBuffer, JitterStats};
 pub use packet::{decode_packet, encode_packet, AudioPacket};
+pub use sink::{spawn_playback, PlaybackState, PlaybackStats};
 pub use source::{decode_file_to_pcm, PacketizedSource};

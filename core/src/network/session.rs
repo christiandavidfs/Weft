@@ -521,6 +521,31 @@ impl NetworkEngine {
         enable_audio: bool,
         config: MediaConfig,
     ) -> Result<Self, String> {
+        Self::build(device_name, enable_audio, config, true)
+    }
+
+    /// Start and join an existing coordinator by address, without browsing
+    /// mDNS. Enables sessions over networks where mDNS doesn't travel (e.g.
+    /// Tailscale): point this device at a coordinator's control address and it
+    /// connects directly as a member.
+    pub fn start_joining(
+        device_name: String,
+        enable_audio: bool,
+        config: MediaConfig,
+        coord_host: &str,
+        coord_port: u16,
+    ) -> Result<Self, String> {
+        let engine = Self::build(device_name, enable_audio, config, false)?;
+        engine.connect_to_coordinator(coord_host, coord_port)?;
+        Ok(engine)
+    }
+
+    fn build(
+        device_name: String,
+        enable_audio: bool,
+        config: MediaConfig,
+        browse_mdns: bool,
+    ) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -547,13 +572,39 @@ impl NetworkEngine {
         rt.spawn(async move { run_server(inner_server, listener).await });
 
         let inner_mdns = inner.clone();
-        std::thread::spawn(move || run_mdns(inner_mdns));
+        std::thread::spawn(move || run_mdns(inner_mdns, browse_mdns));
 
         Ok(Self { inner, rt })
     }
 
     pub fn stop(&self) {
         self.inner.stop();
+    }
+
+    /// The control-plane port this device listens on. Useful to tell another
+    /// device where to join (Tailscale/remote sessions).
+    pub fn control_port(&self) -> u16 {
+        self.inner.lock().port
+    }
+
+    /// Join the coordinator at `host:port` directly, as a member, without
+    /// relying on mDNS discovery. Works across networks (e.g. Tailscale) where
+    /// multicast doesn't travel. Safe to call while already running.
+    pub fn connect_to_coordinator(&self, host: &str, port: u16) -> Result<(), String> {
+        let addr: SocketAddr = format!("{host}:{port}")
+            .parse()
+            .map_err(|e| format!("dirección inválida {host}:{port}: {e}"))?;
+        let demote = {
+            let s = self.inner.lock();
+            s.role == Role::Coordinator
+        };
+        let inner = self.inner.clone();
+        if demote {
+            inner.demote_to_member(&addr, "");
+        } else {
+            inner.join_coordinator(&addr, "");
+        }
+        Ok(())
     }
 
     pub fn status(&self) -> NetworkStatus {
@@ -1484,9 +1535,17 @@ async fn run_member_loop(inner: Arc<SessionInner>, coord: SocketAddr) {
     }
 }
 
-fn run_mdns(inner: Arc<SessionInner>) {
+fn run_mdns(inner: Arc<SessionInner>, browse: bool) {
     let daemon = inner.mdns_daemon();
     inner.re_advertise();
+    if !browse {
+        // Joining mode: we still advertise ourselves (so LAN peers see us) but
+        // don't rely on mDNS to bootstrap — a coordinator was given explicitly.
+        while !inner.is_stopped() {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        return;
+    }
     let Ok(browse) = daemon.browse(SERVICE_TYPE) else {
         return;
     };

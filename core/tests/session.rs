@@ -234,6 +234,62 @@ fn receiver_plays_stream_through_cpal() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn member_joins_coordinator_by_address_without_mdns() {
+    let _guard = SERIAL.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("weft_tailscale_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = write_tone_wav(&dir, 1);
+
+    // Alpha se vuelve coordinador solo (bootstrap mDNS, sin peers).
+    let a = NetworkEngine::start_with("Alpha".to_string(), false).unwrap();
+    let sa = || a.status();
+    let a_is_coord = wait_until(Duration::from_secs(10), || {
+        sa().role.as_str() == "coordinator"
+    });
+    assert!(a_is_coord, "Alpha no quedó de coordinadora: {:?}", sa());
+    let coord_port = a.control_port();
+
+    // Beta se une por dirección explícita, sin browse mDNS (simula Tailscale:
+    // multicast no viaja entre redes).
+    let b = NetworkEngine::start_joining(
+        "Beta".to_string(),
+        false,
+        weft_core::media::MediaConfig::default(),
+        "127.0.0.1",
+        coord_port,
+    )
+    .unwrap();
+    let sb = || b.status();
+
+    let joined = wait_until(Duration::from_secs(15), || {
+        sb().role.as_str() == "member"
+            && sb().members.len() == 2
+            && sa().members.len() == 2
+    });
+    assert!(joined, "Beta no se unió por dirección: A={:?} B={:?}", sa(), sb());
+
+    // Alpha obtiene el token y transmite; Beta recibe el stream.
+    a.request_transmit();
+    let granted = wait_until(Duration::from_secs(5), || {
+        sa().transmitter_id == a.status().device_id
+    });
+    assert!(granted, "Alpha no obtuvo el token: {:?}", sa());
+
+    a.transmit_file(wav.to_str().unwrap()).expect("transmit_file falló");
+
+    let received = wait_until(Duration::from_secs(15), || {
+        b.media_stats()
+            .map(|m| m.received_packets >= 50)
+            .unwrap_or(false)
+    });
+    assert!(received, "Beta no recibió el stream: {:?}", b.media_stats());
+
+    a.stop();
+    b.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Three devices: the token passes from Beta (file transmitter) to Gamma
 /// (member) via a coordinator-negotiated handoff (AskCede/CedeReply), and the
 /// coordinator verifies the new transmitter actually streams (no rollback).

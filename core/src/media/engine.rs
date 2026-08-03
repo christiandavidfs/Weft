@@ -21,11 +21,14 @@ const RX_TIMEOUT: Duration = Duration::from_millis(50);
 /// - `target_latency_us`: end-to-end pre-roll the transmitter schedules.
 /// - `drift_threshold_frames`: how far the output may drift from the session
 ///   timeline before a correction frame is stuffed/dropped (~1ms at 48kHz).
+/// - `dj`: enables DJ mode to mix multiple simultaneous sources.
+/// All non-`dj` values retain original defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct MediaConfig {
     pub jitter_capacity_us: u128,
     pub target_latency_us: u128,
     pub drift_threshold_frames: u64,
+    pub dj: bool,
 }
 
 impl Default for MediaConfig {
@@ -34,6 +37,7 @@ impl Default for MediaConfig {
             jitter_capacity_us: 200_000,
             target_latency_us: 100_000,
             drift_threshold_frames: 48,
+            dj: false,
         }
     }
 }
